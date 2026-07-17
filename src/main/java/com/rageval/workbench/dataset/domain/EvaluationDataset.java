@@ -1,5 +1,6 @@
 package com.rageval.workbench.dataset.domain;
 
+import com.rageval.workbench.common.error.ConflictException;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -59,6 +60,10 @@ public class EvaluationDataset {
     }
 
     public void markReady() {
+        if (status != DatasetStatus.DRAFT) {
+            throw new ConflictException(
+                    "Dataset " + id + " is " + status + " and can only be marked READY from DRAFT");
+        }
         this.status = DatasetStatus.READY;
         this.updatedAt = Instant.now();
     }

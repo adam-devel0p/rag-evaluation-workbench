@@ -23,3 +23,6 @@ databaseChangeLog:
   - include:
       file: db/changelog/changes/008-evaluation-finding.yaml
       relativeToChangelogFile: false
+  - include:
+      file: db/changelog/changes/009-target-system-adapter-config.yaml
+      relativeToChangelogFile: false

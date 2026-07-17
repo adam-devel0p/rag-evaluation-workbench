@@ -10,4 +10,6 @@ public interface EvaluationTestCaseRepository extends JpaRepository<EvaluationTe
     List<EvaluationTestCase> findByDatasetId(UUID datasetId);
 
     boolean existsByDatasetIdAndExternalId(UUID datasetId, String externalId);
+
+    boolean existsByDatasetIdAndExternalIdAndIdNot(UUID datasetId, String externalId, UUID id);
 }

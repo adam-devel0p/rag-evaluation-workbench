@@ -1,0 +1,53 @@
+databaseChangeLog:
+  - changeSet:
+      id: 009-01-target-system-connect-timeout-and-redirects
+      author: workbench
+      changes:
+        - addColumn:
+            tableName: target_system
+            columns:
+              - column:
+                  name: connect_timeout_milliseconds
+                  type: INT
+                  defaultValueNumeric: 5000
+                  constraints:
+                    nullable: false
+              - column:
+                  name: follow_redirects
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false
+      rollback:
+        - dropColumn:
+            tableName: target_system
+            columnName: connect_timeout_milliseconds
+        - dropColumn:
+            tableName: target_system
+            columnName: follow_redirects
+  - changeSet:
+      id: 009-02-target-system-response-mapping
+      author: workbench
+      changes:
+        - addColumn:
+            tableName: target_system
+            columns:
+              - column:
+                  name: response_mapping
+                  type: JSONB
+      rollback:
+        - dropColumn:
+            tableName: target_system
+            columnName: response_mapping
+  - changeSet:
+      id: 009-03-target-system-connect-timeout-positive
+      author: workbench
+      changes:
+        - sql:
+            sql: >-
+              ALTER TABLE target_system
+              ADD CONSTRAINT chk_target_system_connect_timeout_positive
+              CHECK (connect_timeout_milliseconds > 0);
+      rollback:
+        - sql:
+            sql: ALTER TABLE target_system DROP CONSTRAINT chk_target_system_connect_timeout_positive;

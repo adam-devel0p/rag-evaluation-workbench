@@ -13,7 +13,7 @@ import org.testcontainers.utility.DockerImageName;
  * only and gain nothing from an Ollama container, which would just slow the build down.
  */
 @TestConfiguration(proxyBeanMethods = false)
-class PostgresTestcontainersConfiguration {
+public class PostgresTestcontainersConfiguration {
 
     @Bean
     @ServiceConnection

@@ -5,10 +5,10 @@ full requirements and `CLAUDE.md` for non-negotiable constraints.
 
 ## Current status
 
-**Last completed phase:** 1 — Persistence foundation
-**Next phase to run:** 2 — Dataset and target configuration
-**Build state:** `./mvnw clean verify` green (5/5 tests), no local Ollama required (Testcontainers
-starts its own Ollama and Postgres containers).
+**Last completed phase:** 2 — Dataset and target configuration
+**Next phase to run:** 3 — Run orchestration
+**Build state:** `./mvnw clean verify` green (60/60 tests), no local Ollama required (Testcontainers
+starts its own Ollama and Postgres containers; Docker must be running for the Postgres-backed ITs).
 
 This header is the fast resume pointer — update it as the last step of every session. For the
 full history and reasoning behind each session's decisions, see "Session Log" in
@@ -57,21 +57,31 @@ README, `.env.example`, `compose.yaml`, `examples/`, `scripts/`. These start in 
 
 ## Phase 2 — Dataset and target configuration
 
-- [ ] DTOs + explicit validation (no JPA entities across the API boundary)
-- [ ] Dataset JSON import (transactional, all-or-nothing)
-- [ ] Dataset CSV import
-- [ ] `EvaluationDataset` status transitions (DRAFT → READY → ARCHIVED), no silent edits once READY
-- [ ] Target CRUD, secret-name-only persistence, URL scheme validation (http/https only)
-- [ ] Target connection-test endpoint
-- [ ] `TargetSystemAdapter` abstraction + Standard HTTP adapter (`RestClient`, Jackson-tree
+- [x] DTOs + explicit validation (no JPA entities across the API boundary)
+- [x] Dataset JSON import (transactional, all-or-nothing)
+- [x] Dataset CSV import
+- [x] `EvaluationDataset` status transitions (DRAFT → READY → ARCHIVED), no silent edits once READY
+- [x] Target CRUD, secret-name-only persistence, URL scheme validation (http/https only)
+- [x] Target connection-test endpoint
+- [x] `TargetSystemAdapter` abstraction + Standard HTTP adapter (`RestClient`, Jackson-tree
       placeholder substitution, JSON Pointer response extraction)
-- [ ] Retry policy (retryable vs non-retryable per spec §8.1)
-- [ ] Imported-trace adapter (JSON + CSV)
-- [ ] WireMock adapter tests (success, timeouts, 401/429/500, malformed JSON, oversized response,
+- [x] Retry policy (retryable vs non-retryable per spec §8.1)
+- [x] WireMock adapter tests (success, timeouts, 401/429/500, malformed JSON, oversized response,
       secret header redaction)
+
+**Deliberately moved to Phase 3:** Imported-trace adapter (JSON + CSV, spec §8.2) and the
+`POST /api/v1/imported-traces` endpoint. This session's scope (see Session 2 log) explicitly
+enumerated Phase 2's deliverables and did not include it. It also has a real dependency this
+session doesn't: matching an imported trace to the right repetition needs `TestExecution`/run
+context that doesn't exist until Phase 3's run orchestration lands — building the import endpoint
+now would mean guessing at that shape rather than deriving it from the real orchestrator. Tracked
+as the first item in Phase 3's checklist below.
 
 ## Phase 3 — Run orchestration
 
+- [ ] Imported-trace adapter (JSON + CSV, spec §8.2) + `POST /api/v1/imported-traces`, moved here
+      from Phase 2 (see Phase 2 notes above) — needs `TestExecution`/repetition context to match a
+      trace to the right execution
 - [ ] Run state machine (CREATED → QUEUED → RUNNING → PARTIALLY_COMPLETED/COMPLETED/FAILED/
       CANCELLED/INTERRUPTED)
 - [ ] Bounded task executor (configurable worker count, queue capacity, per-target concurrency;

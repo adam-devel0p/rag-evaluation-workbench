@@ -63,6 +63,12 @@ public class TargetSystem {
     @Column(name = "timeout_milliseconds", nullable = false)
     private int timeoutMilliseconds;
 
+    @Column(name = "connect_timeout_milliseconds", nullable = false)
+    private int connectTimeoutMilliseconds;
+
+    @Column(name = "follow_redirects", nullable = false)
+    private boolean followRedirects;
+
     @Column(name = "maximum_concurrency", nullable = false)
     private int maximumConcurrency;
 
@@ -75,6 +81,10 @@ public class TargetSystem {
 
     @Column(name = "api_key_header_name")
     private String apiKeyHeaderName;
+
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "response_mapping")
+    private ResponseMapping responseMapping;
 
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
@@ -102,10 +112,13 @@ public class TargetSystem {
             String modelJsonPointer,
             boolean enabled,
             int timeoutMilliseconds,
+            int connectTimeoutMilliseconds,
+            boolean followRedirects,
             int maximumConcurrency,
             AuthenticationType authenticationType,
             String secretEnvironmentVariable,
-            String apiKeyHeaderName) {
+            String apiKeyHeaderName,
+            ResponseMapping responseMapping) {
         this.id = UUID.randomUUID();
         this.name = Objects.requireNonNull(name, "name must not be null");
         this.description = description;
@@ -119,14 +132,66 @@ public class TargetSystem {
         this.modelJsonPointer = modelJsonPointer;
         this.enabled = enabled;
         this.timeoutMilliseconds = timeoutMilliseconds;
+        this.connectTimeoutMilliseconds = connectTimeoutMilliseconds;
+        this.followRedirects = followRedirects;
         this.maximumConcurrency = maximumConcurrency;
         this.authenticationType =
                 Objects.requireNonNull(authenticationType, "authenticationType must not be null");
         this.secretEnvironmentVariable = secretEnvironmentVariable;
         this.apiKeyHeaderName = apiKeyHeaderName;
+        this.responseMapping = responseMapping;
         Instant now = Instant.now();
         this.createdAt = now;
         this.updatedAt = now;
+    }
+
+    /**
+     * Replaces every editable field. There is no partial-update path: the API layer always sends
+     * the full desired state (mirrors {@link com.rageval.workbench.dataset.domain.EvaluationDataset}'s
+     * all-or-nothing modification model, just without a READY-style lock since a target has no
+     * "published" state).
+     */
+    public void update(
+            String name,
+            String description,
+            AdapterType adapterType,
+            String endpointUrl,
+            TargetHttpMethod httpMethod,
+            JsonNode requestTemplate,
+            String answerJsonPointer,
+            String citationsJsonPointer,
+            String retrievedChunksJsonPointer,
+            String modelJsonPointer,
+            boolean enabled,
+            int timeoutMilliseconds,
+            int connectTimeoutMilliseconds,
+            boolean followRedirects,
+            int maximumConcurrency,
+            AuthenticationType authenticationType,
+            String secretEnvironmentVariable,
+            String apiKeyHeaderName,
+            ResponseMapping responseMapping) {
+        this.name = Objects.requireNonNull(name, "name must not be null");
+        this.description = description;
+        this.adapterType = Objects.requireNonNull(adapterType, "adapterType must not be null");
+        this.endpointUrl = endpointUrl;
+        this.httpMethod = httpMethod;
+        this.requestTemplate = requestTemplate;
+        this.answerJsonPointer = answerJsonPointer;
+        this.citationsJsonPointer = citationsJsonPointer;
+        this.retrievedChunksJsonPointer = retrievedChunksJsonPointer;
+        this.modelJsonPointer = modelJsonPointer;
+        this.enabled = enabled;
+        this.timeoutMilliseconds = timeoutMilliseconds;
+        this.connectTimeoutMilliseconds = connectTimeoutMilliseconds;
+        this.followRedirects = followRedirects;
+        this.maximumConcurrency = maximumConcurrency;
+        this.authenticationType =
+                Objects.requireNonNull(authenticationType, "authenticationType must not be null");
+        this.secretEnvironmentVariable = secretEnvironmentVariable;
+        this.apiKeyHeaderName = apiKeyHeaderName;
+        this.responseMapping = responseMapping;
+        this.updatedAt = Instant.now();
     }
 
     public void disable() {
@@ -191,6 +256,14 @@ public class TargetSystem {
         return timeoutMilliseconds;
     }
 
+    public int getConnectTimeoutMilliseconds() {
+        return connectTimeoutMilliseconds;
+    }
+
+    public boolean isFollowRedirects() {
+        return followRedirects;
+    }
+
     public int getMaximumConcurrency() {
         return maximumConcurrency;
     }
@@ -205,6 +278,10 @@ public class TargetSystem {
 
     public String getApiKeyHeaderName() {
         return apiKeyHeaderName;
+    }
+
+    public ResponseMapping getResponseMapping() {
+        return responseMapping;
     }
 
     public Instant getCreatedAt() {

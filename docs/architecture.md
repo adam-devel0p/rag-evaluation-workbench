@@ -239,9 +239,152 @@ build log showed Spring Boot's default-open-in-view warning on every startup; di
 standard fix and costs nothing at this phase (no view-layer code exists yet to depend on the
 lazy-loading-in-view behavior it enables).
 
+## Phase 2 notes
+
+### Jackson 3 tree API surface actually used (verified via `javap` against the resolved jar, not assumed)
+
+Confirmed against `jackson-databind-3.1.4.jar` before writing `RequestTemplateSubstitutor` /
+`JsonPointerExtractor`, since CLAUDE.md flags Jackson 3 as a rename-heavy migration:
+
+- `TextNode` is gone — Jackson 3 renamed it **`StringNode`**, created via
+  `JsonNodeFactory.instance.stringNode(String)` or `ObjectMapper.valueToTree`. `JsonNode.isTextual()`
+  is deprecated in favor of `isString()`; `asText()` still exists but `asString()` is the
+  non-deprecated accessor.
+- `ObjectMapper`/`JsonMapper` keeps `createObjectNode()`, `createArrayNode()`, `readTree(...)`
+  (throws unchecked `JacksonException`, not a checked `IOException`), `writeValueAsBytes(Object)`,
+  `treeToValue(JsonNode, TypeReference<T>)` (the `TypeReference` type itself moved to
+  `tools.jackson.core.type`).
+- `JsonNode.at(String)` / `at(JsonPointer)` work as in Jackson 2 for pointer resolution.
+
+### Request-template substitution: exact-text-node replacement, not string interpolation
+
+`RequestTemplateSubstitutor` walks the parsed `JsonNode` tree recursively and only ever replaces a
+text node whose *entire* value equals one of the four placeholder tokens
+(`{{question}}`/`{{conversationId}}`/`{{testCaseId}}`/`{{userContext}}`). This was a hard CLAUDE.md
+requirement (no unsafe global string substitution over serialized JSON) verified by
+`RequestTemplateSubstitutorTest#leavesNonPlaceholderStringsUntouched`, which asserts a string that
+merely *contains* `{{question}}` as a substring is left alone. `{{userContext}}` is spliced in via
+`JsonMapper.valueToTree(Map)` when it is the complete value of a node, producing a real nested
+JSON object rather than a quoted string — also covered by a dedicated test.
+
+### `TargetInvocationOutcome` is its own enum, not a reuse of `ExecutionStatus`
+
+`target.domain` needed a small terminal-outcome vocabulary (`SUCCEEDED`/`TIMED_OUT`/
+`TARGET_ERROR`/`INVALID_RESPONSE`) for `TargetInvocationResult`. `run.domain.ExecutionStatus` has a
+superset of these values already, but reusing it would make `target` depend on `run` for a status
+enum when the real dependency direction is the other way (run orchestration invokes target
+adapters, not vice versa). Kept `TargetInvocationOutcome` as its own 4-value enum in `target.domain`;
+Phase 3's run orchestrator will map it onto `ExecutionStatus` when persisting a `TestExecution`.
+`Citation`/`RetrievedChunk`, by contrast, *are* reused directly from `run.domain` in
+`TargetInvocationResult` — both are plain immutable value records with one canonical shape (spec
+§6.5/§8), not entities, so this is data reuse rather than a real module-layering violation.
+
+### Retry policy: exact allow-list per spec §8.1, nothing inferred
+
+`StandardHttpTargetSystemAdapter` retries only HTTP 429/502/503/504, connection resets, and
+timeouts — verified against the *exact* wording of spec §8.1, which lists these four status codes
+and nothing else as retryable. HTTP 500 is therefore **not** retried, even though it's a server
+error, because it's absent from the spec's retryable set; `StandardHttpTargetSystemAdapterWireMockTest#http500IsNonRetryableSinceItIsNotInTheRetryableSet`
+locks this in. `rag-evaluation.target.retry.maximum-attempts` (default 2, per spec §25's suggested
+config) is the *total* attempt count including the first try, not the retry count — documented on
+`TargetProperties.Retry` itself since "2 attempts" vs "2 retries" is exactly the kind of ambiguity
+that causes silent behavior drift later.
+
+A fresh `java.net.http.HttpClient` (wrapped in Spring's `JdkClientHttpRequestFactory`) is built per
+invocation rather than cached, because connect timeout and redirect policy are per-target
+configuration (`TargetSystem.connectTimeoutMilliseconds`/`followRedirects`), not global — the
+allocation cost is negligible next to a network round trip. Redirects default to
+`HttpClient.Redirect.NEVER`; a target must opt in to `NORMAL` via `followRedirects: true`, matching
+"do not follow redirects automatically unless explicitly configured."
+
+### Response size limit is enforced by bounded streaming, not post-hoc length checking
+
+`readBounded` reads the response `InputStream` in 8 KB chunks and throws
+`ResponseTooLargeException` (an `IOException`, so `RestClient` wraps it in the same
+`ResourceAccessException` path as real transport failures) the moment the running total exceeds
+`rag-evaluation.target.maximum-response-bytes`. An oversized response therefore never fully lands
+in memory — this matters because the response size limit exists specifically to bound worst-case
+memory use against an untrusted/misbehaving target, and reading the whole body first to check its
+length would defeat that purpose.
+
+### `TargetSystemConfiguration` carries a resolved secret value; `TargetSystem` never does
+
+`SecretResolver.resolve(TargetSystem)` reads `System.getenv(secretEnvironmentVariable)` and
+`TargetSystemConfigurationFactory` folds that transient value into `TargetSystemConfiguration`,
+which lives only for the duration of one adapter call and is never persisted or logged (see
+`docs/data-handling.md`). This keeps the adapter package free of environment-variable access and
+means `TargetSystemConfiguration` — not the JPA entity — is the one place a real secret value
+exists in memory.
+
+### Response mapping is one JSONB column, not thirteen flat columns
+
+Spec §8.1 asks for per-field JSON Pointer overrides for citations (5 fields) and chunks (6 fields)
+plus input/output token pointers — 13 optional configuration values. Rather than 13 new
+`target_system` columns, these are grouped into one `ResponseMapping` record (with nested
+`CitationFieldMapping`/`RetrievedChunkFieldMapping`) stored as a single nullable JSONB column,
+consistent with the Phase 1 convention of using structured records for JSONB fields with a
+spec-defined shape. `null` at any level means "use the standard normalized field names," so the
+common case (no override needed) requires zero configuration.
+
+### Dataset/target "full replace" update model, no `PATCH`
+
+Both `EvaluationTestCase.update(...)` and `TargetSystem.update(...)` (new methods this phase)
+replace every editable field in one call rather than supporting partial field patching. This
+mirrors spec §21's `PUT` (not `PATCH`) endpoints and avoids the ambiguity of "was this field
+omitted, or intentionally set to null" that partial-update semantics would introduce — the API
+DTOs (`TestCaseRequest`, `TargetSystemRequest`) are the same shape for create and update.
+
+### `EvaluationDataset.markReady()` now guards `DRAFT → READY` itself
+
+Phase 1's `markReady()` unconditionally set `status = READY`, which was fine before any code path
+could call it from a non-`DRAFT` state. Phase 2 introduces the actual API endpoint, so the guard
+(`ConflictException` unless currently `DRAFT`) was added directly to the entity method rather than
+duplicated in `DatasetService` — the state machine's invariant belongs on the aggregate, not on
+every caller.
+
+### Imported-trace adapter deliberately deferred to Phase 3
+
+See the note in `docs/implementation-plan.md`'s Phase 2 section: this session's explicit scope
+listed every Phase 2 deliverable except the imported-trace adapter and `POST
+/api/v1/imported-traces`, and building it now would mean guessing at how a trace maps to a
+`TestExecution` repetition — context that only exists once Phase 3's run orchestrator is real.
+Moved to the top of the Phase 3 checklist instead of left as a silently-skipped item.
+
+### CSV import covers only "basic fields," matching spec §8.2's own basic/rich split
+
+Dataset CSV import (`DatasetImportService.importCsv`) accepts exactly nine flat columns
+(`externalId, question, referenceAnswer, answerable, shouldRefuse, severity, tags,
+expectedDocumentIds, notes`) and always produces test cases with empty `requiredFacts`/
+`forbiddenClaims`/`userContext` — those are structured data (a list of `ExpectedFact` records with
+a match type, or an arbitrary JSON object) that cannot be reasonably flattened into CSV cells. Spec
+§8.2 draws exactly this line for imported-trace CSV ("Also support CSV for basic fields" vs. "JSON
+is the canonical rich import format"); the same split was applied here rather than inventing a
+CSV micro-syntax for nested structures. The hand-rolled RFC 4180 parser (quoted fields, embedded
+commas, `""` as an escaped quote) avoids adding a CSV library dependency not in CLAUDE.md's fixed
+technology list for a ~60-line parsing need.
+
+### Validation collects every row/field violation before persisting anything
+
+Both `DatasetImportService.importJson`/`importCsv` and `TargetSystemService`'s create/update path
+validate the *entire* payload up front (all test cases' regex patterns, all required fields, all
+row-level CSV parsing) and throw one `ValidationException` carrying every `FieldViolation` found,
+rather than failing fast on the first problem. Combined with `@Transactional` (default rollback on
+any `RuntimeException`), this gives the "all-or-nothing, clear row-level errors" behavior spec §9
+asks for without a manual two-phase commit — nothing is written until validation fully passes, and
+the caller sees every problem in one response instead of fixing errors one at a time.
+
+### `ProblemDetail` + correlation ID wiring introduced now, not deferred whole to Phase 8
+
+CLAUDE.md's Phase 2 task explicitly asked for "RFC 9457 `ProblemDetail` with structured field
+errors," so `GlobalExceptionHandler` (`@RestControllerAdvice`) and `CorrelationIdFilter` were built
+this phase rather than waiting for Phase 8's "centralized exception handling" line item. Phase 8
+will extend this (Actuator integration, more exception types as new failure modes appear) but the
+mechanism — and the `errors`/`correlationId` extension properties every `ProblemDetail` carries —
+is already in place and exercised by every controller integration test.
+
 ## Later phases
 
-To be filled in as Phases 2–8 land (orchestration model, evaluator wrapping decisions actually
+To be filled in as Phases 3–8 land (orchestration model, evaluator wrapping decisions actually
 implemented, comparison semantics, etc). Each phase gets its own `## Phase N notes` section above
 this one with the reasoning behind decisions; the Session Log below is the short chronological
 index into that detail.
@@ -326,3 +469,73 @@ lost context — read both before starting work.
   Standard HTTP adapter (Jackson-tree placeholder substitution — reuse the `JsonNode` mapping
   already in place on `TargetSystem.requestTemplate` — plus JSON Pointer response extraction),
   then WireMock adapter tests per spec §28.3.
+
+### Session 2 — 2026-07-17 — Phase 2: Dataset and target configuration
+
+- Reconciled first: re-ran `./mvnw clean verify` before starting (Docker confirmed running) —
+  matched Session 1's log exactly (BUILD SUCCESS, 5/5 tests), so no reconciliation was needed.
+- **Scope note:** this session's task list covered every Phase 2 checklist item except the
+  imported-trace adapter (JSON+CSV) and `POST /api/v1/imported-traces`. Deliberately deferred that
+  one item to the top of Phase 3 rather than guess at its `TestExecution`/repetition-matching shape
+  before Phase 3's run orchestrator exists to define it — see "Phase 2 notes" above and the
+  `docs/implementation-plan.md` Phase 2/3 checklists for the full rationale.
+- **`TargetSystem` extended additively:** `connectTimeoutMilliseconds`, `followRedirects`, and a
+  new nullable JSONB `responseMapping` column (input/output token pointers + non-standard
+  citation/chunk per-item field mappings, spec §8.1) via migration `009`. Collapsed to one
+  constructor rather than keeping a legacy-compatible overload (CLAUDE.md warns against
+  backwards-compat shims); updated the two Phase 1 `PersistenceIntegrationTest` call sites to match
+  and added `TargetSystem.update(...)`/`EvaluationTestCase.update(...)` full-replace methods.
+  `EvaluationDataset.markReady()` now guards `DRAFT → READY` (throws `ConflictException`
+  otherwise) — see "Phase 2 notes" for why this was safe to tighten now.
+- **`common` package built out:** `common.error` (`ValidationException`/`NotFoundException`/
+  `ConflictException`/`FieldViolation`, `GlobalExceptionHandler` → RFC 9457 `ProblemDetail`,
+  `CorrelationIdFilter` → SLF4J MDC + `X-Correlation-Id` echo), `common.json`
+  (`RequestTemplateSubstitutor`, `JsonPointerExtractor` — see "Phase 2 notes" for the Jackson 3
+  API-surface findings behind both), `common.api.PageResponse` (controllers never return Spring
+  Data's `Page` directly).
+- **Target module:** `TargetSystemAdapter` domain interface (spec §8) +
+  `StandardHttpTargetSystemAdapter` (`RestClient` over a per-invocation JDK `HttpClient`, exact
+  retryable/non-retryable policy per spec §8.1, bounded-stream response-size enforcement,
+  Jackson-tree request templating, JSON Pointer response extraction with configurable per-item
+  citation/chunk field mappings). `TargetSystemAdapterRegistry` resolves by `AdapterType` so a
+  second adapter (imported-trace, Phase 3) plugs in without touching call sites.
+  `TargetSystemService` (CRUD, URL/secret validation, delete-rejected-with-dependent-runs via a new
+  `EvaluationRunRepository.existsByTargetSystemId`), `TargetConnectionTestService` (invokes the
+  adapter once for real against the configured target and reports which pointer mappings actually
+  resolved), full REST surface under `/api/v1/targets` per spec §21.
+- **Dataset module:** `DatasetService` (CRUD, test-case add/update gated on `isModifiable()`),
+  `DatasetImportService` (JSON + CSV, both transactional/all-or-nothing, all violations collected
+  before anything is persisted — see "Phase 2 notes"), `ExpectedFactValidator` (compiles every
+  `REGEX`-mode pattern at import/edit time, never at evaluation time), full REST surface under
+  `/api/v1/datasets` per spec §21 including `import/json`, `import/csv` (multipart), `mark-ready`,
+  and per-test-case add/update.
+- **Config:** `TargetProperties` (`@ConfigurationProperties`, `@ConfigurationPropertiesScan` added
+  to the application class) for `maximum-response-bytes` and the retry policy — global, not
+  per-target, per spec §25's suggested structure.
+- **Tests:** added `wiremock-standalone:3.9.1` (test scope). 60/60 tests total this session (up
+  from 5): unit tests for template substitution, JSON Pointer extraction, URL validation, and regex
+  validation; a Mockito-based `DatasetImportServiceTest` for CSV parsing/validation without needing
+  a database; an 11-scenario `StandardHttpTargetSystemAdapterWireMockTest` covering every case spec
+  §28.3 lists (success, nested pointers, empty answer, invalid JSON, timeout-with-retry-exhaustion,
+  401 non-retryable, 429-retried-then-succeeds, 500 non-retryable, missing optional arrays,
+  oversized response, secret-header-injected-but-never-logged via a Logback `ListAppender`); two
+  Testcontainers-backed MockMvc integration tests (`TargetSystemControllerIntegrationTest`,
+  `DatasetControllerIntegrationTest`) exercising the full CRUD/import/connection-test/status-
+  transition surface against a real Postgres + a real WireMock target. Made
+  `PostgresTestcontainersConfiguration` public so both new IT packages could reuse Phase 1's
+  Postgres-only Testcontainers wiring instead of each starting their own container.
+- Rewrote `docs/data-handling.md` to describe only what's actually implemented (logging content,
+  correlation IDs, secret handling, URL validation, response-size limits) instead of the Phase 0
+  stub's aspirational bullet list; left a clearly-marked "not yet implemented" section for what
+  genuinely arrives in later phases.
+- `./mvnw clean verify`: BUILD SUCCESS, 60/60 tests, Docker running, no local Ollama daemon
+  required.
+- `git status` after the run: only the expected new/modified files, nothing stray (checked before
+  writing this entry).
+- **Next step:** Phase 3 — run orchestration. Start with the imported-trace adapter (JSON+CSV) +
+  `POST /api/v1/imported-traces` deferred from this session (needs an `ImportedTraceRecord`
+  entity/table — genuinely new persistence, not just an API layer), then the run state machine,
+  bounded task executor, live run execution wiring `TargetSystemAdapterRegistry` +
+  `TargetSystemConfigurationFactory` (both already built) into per-execution invocations, startup
+  recovery for stale `RUNNING` runs, and the `demo` profile target + example dataset exercising
+  every §27 scenario.

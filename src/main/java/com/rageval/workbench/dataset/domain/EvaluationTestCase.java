@@ -115,6 +115,35 @@ public class EvaluationTestCase {
         this.updatedAt = now;
     }
 
+    /** Full replace, mirroring {@link EvaluationDataset}'s all-or-nothing modification model. Callers must have already checked {@link EvaluationDataset#isModifiable()}. */
+    public void update(
+            String externalId,
+            String question,
+            String referenceAnswer,
+            boolean answerable,
+            boolean shouldRefuse,
+            Severity severity,
+            List<ExpectedFact> requiredFacts,
+            List<ExpectedFact> forbiddenClaims,
+            List<String> expectedDocumentIds,
+            List<String> tags,
+            Map<String, Object> userContext,
+            String notes) {
+        this.externalId = Objects.requireNonNull(externalId, "externalId must not be null");
+        this.question = Objects.requireNonNull(question, "question must not be null");
+        this.referenceAnswer = referenceAnswer;
+        this.answerable = answerable;
+        this.shouldRefuse = shouldRefuse;
+        this.severity = Objects.requireNonNull(severity, "severity must not be null");
+        this.requiredFacts = requiredFacts != null ? List.copyOf(requiredFacts) : List.of();
+        this.forbiddenClaims = forbiddenClaims != null ? List.copyOf(forbiddenClaims) : List.of();
+        this.expectedDocumentIds = expectedDocumentIds != null ? List.copyOf(expectedDocumentIds) : List.of();
+        this.tags = tags != null ? List.copyOf(tags) : List.of();
+        this.userContext = userContext;
+        this.notes = notes;
+        this.updatedAt = Instant.now();
+    }
+
     public UUID getId() {
         return id;
     }

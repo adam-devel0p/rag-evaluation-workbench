@@ -121,9 +121,12 @@ class PersistenceIntegrationTest {
                 "/model",
                 true,
                 30_000,
+                5_000,
+                false,
                 4,
                 AuthenticationType.BEARER_TOKEN,
                 "ACME_CHATBOT_TOKEN",
+                null,
                 null);
 
         UUID id = targetSystemRepository.save(target).getId();
@@ -190,8 +193,11 @@ class PersistenceIntegrationTest {
                 "/model",
                 true,
                 30_000,
+                5_000,
+                false,
                 2,
                 AuthenticationType.NONE,
+                null,
                 null,
                 null);
         targetSystemRepository.save(target);
