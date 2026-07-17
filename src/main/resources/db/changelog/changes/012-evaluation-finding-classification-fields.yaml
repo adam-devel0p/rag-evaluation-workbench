@@ -1,0 +1,35 @@
+databaseChangeLog:
+  # Spec §16 requires every classification rule to produce a confidence, the supporting metric
+  # result IDs, and whether human confirmation is required. §6.8's field list predates §16's rule
+  # contract; these arrive as additive nullable/defaulted columns so Phase 1-3 data stays valid.
+  - changeSet:
+      id: 012-01-evaluation-finding-classification-fields
+      author: workbench
+      changes:
+        - addColumn:
+            tableName: evaluation_finding
+            columns:
+              - column:
+                  name: confidence
+                  type: DOUBLE PRECISION
+              - column:
+                  name: requires_human_confirmation
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false
+              - column:
+                  name: supporting_metric_result_ids
+                  type: JSONB
+  - changeSet:
+      id: 012-02-evaluation-finding-confidence-check
+      author: workbench
+      changes:
+        - sql:
+            sql: >-
+              ALTER TABLE evaluation_finding
+              ADD CONSTRAINT chk_finding_confidence
+              CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1));
+      rollback:
+        - sql:
+            sql: ALTER TABLE evaluation_finding DROP CONSTRAINT chk_finding_confidence;

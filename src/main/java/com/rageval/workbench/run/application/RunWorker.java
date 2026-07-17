@@ -37,6 +37,7 @@ public class RunWorker implements ApplicationListener<ContextClosedEvent> {
     private final TargetSystemConfigurationFactory configurationFactory;
     private final TargetSystemAdapterRegistry adapterRegistry;
     private final TargetConcurrencyLimiter concurrencyLimiter;
+    private final EvaluationPipeline evaluationPipeline;
 
     private volatile boolean shuttingDown;
 
@@ -45,12 +46,14 @@ public class RunWorker implements ApplicationListener<ContextClosedEvent> {
             TargetSystemRepository targetSystemRepository,
             TargetSystemConfigurationFactory configurationFactory,
             TargetSystemAdapterRegistry adapterRegistry,
-            TargetConcurrencyLimiter concurrencyLimiter) {
+            TargetConcurrencyLimiter concurrencyLimiter,
+            EvaluationPipeline evaluationPipeline) {
         this.stateService = stateService;
         this.targetSystemRepository = targetSystemRepository;
         this.configurationFactory = configurationFactory;
         this.adapterRegistry = adapterRegistry;
         this.concurrencyLimiter = concurrencyLimiter;
+        this.evaluationPipeline = evaluationPipeline;
     }
 
     @Override
@@ -83,6 +86,10 @@ public class RunWorker implements ApplicationListener<ContextClosedEvent> {
                 }
                 invokeOne(runId, target, configuration, adapter, execution);
             }
+            // Spec §15 orchestration: evaluate → classify → aggregate before the run goes
+            // terminal. Aggregation itself is computed on demand by the summary endpoint; what
+            // must exist beforehand are metric results and findings.
+            evaluationPipeline.completeRunEvaluation(runId);
             stateService.finalizeRun(runId);
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
@@ -134,6 +141,7 @@ public class RunWorker implements ApplicationListener<ContextClosedEvent> {
             concurrencyLimiter.release(target.getId(), target.getMaximumConcurrency());
         }
         stateService.recordInvocationResult(execution.executionId(), result);
+        evaluationPipeline.evaluateExecution(execution.executionId());
     }
 
     private UUID loadTargetSystemId(UUID runId) {

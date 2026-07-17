@@ -59,6 +59,16 @@ public class EvaluationFinding {
     @JdbcTypeCode(SqlTypes.JSON)
     private List<EvaluationEvidence> evidence;
 
+    /** Rule confidence in the claimed category (spec §16); null when the rule makes no confidence claim. */
+    private Double confidence;
+
+    @Column(name = "requires_human_confirmation", nullable = false)
+    private boolean requiresHumanConfirmation;
+
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "supporting_metric_result_ids")
+    private List<UUID> supportingMetricResultIds;
+
     @Column(name = "human_confirmed", nullable = false)
     private boolean humanConfirmed;
 
@@ -79,7 +89,10 @@ public class EvaluationFinding {
             String likelyCause,
             String recommendation,
             String acceptanceCriteria,
-            List<EvaluationEvidence> evidence) {
+            List<EvaluationEvidence> evidence,
+            Double confidence,
+            boolean requiresHumanConfirmation,
+            List<UUID> supportingMetricResultIds) {
         this.id = UUID.randomUUID();
         this.evaluationRunId = Objects.requireNonNull(evaluationRunId, "evaluationRunId must not be null");
         this.testExecutionId = Objects.requireNonNull(testExecutionId, "testExecutionId must not be null");
@@ -91,6 +104,13 @@ public class EvaluationFinding {
         this.recommendation = recommendation;
         this.acceptanceCriteria = acceptanceCriteria;
         this.evidence = evidence != null ? List.copyOf(evidence) : List.of();
+        if (confidence != null && (confidence < 0.0 || confidence > 1.0)) {
+            throw new IllegalArgumentException("confidence must be within [0.0, 1.0], got " + confidence);
+        }
+        this.confidence = confidence;
+        this.requiresHumanConfirmation = requiresHumanConfirmation;
+        this.supportingMetricResultIds =
+                supportingMetricResultIds != null ? List.copyOf(supportingMetricResultIds) : List.of();
         this.humanConfirmed = false;
         this.createdAt = Instant.now();
     }
@@ -141,6 +161,18 @@ public class EvaluationFinding {
 
     public List<EvaluationEvidence> getEvidence() {
         return evidence;
+    }
+
+    public Double getConfidence() {
+        return confidence;
+    }
+
+    public boolean isRequiresHumanConfirmation() {
+        return requiresHumanConfirmation;
+    }
+
+    public List<UUID> getSupportingMetricResultIds() {
+        return supportingMetricResultIds;
     }
 
     public boolean isHumanConfirmed() {

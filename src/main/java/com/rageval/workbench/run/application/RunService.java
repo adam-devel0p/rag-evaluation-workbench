@@ -52,6 +52,7 @@ public class RunService {
     private final RunWorker runWorker;
     private final ThreadPoolTaskExecutor runExecutor;
     private final ExecutionProperties executionProperties;
+    private final EvaluationPipeline evaluationPipeline;
 
     public RunService(
             EvaluationRunRepository runRepository,
@@ -62,7 +63,8 @@ public class RunService {
             RunStateService stateService,
             RunWorker runWorker,
             @Qualifier("runExecutionExecutor") ThreadPoolTaskExecutor runExecutor,
-            ExecutionProperties executionProperties) {
+            ExecutionProperties executionProperties,
+            EvaluationPipeline evaluationPipeline) {
         this.runRepository = runRepository;
         this.executionRepository = executionRepository;
         this.targetSystemRepository = targetSystemRepository;
@@ -72,6 +74,7 @@ public class RunService {
         this.runWorker = runWorker;
         this.runExecutor = runExecutor;
         this.executionProperties = executionProperties;
+        this.evaluationPipeline = evaluationPipeline;
     }
 
     @Transactional
@@ -103,6 +106,7 @@ public class RunService {
                     "repetitionsPerTestCase must be at least 1",
                     new FieldViolation("repetitionsPerTestCase", "must be at least 1"));
         }
+        validateEvaluatorSelection(request);
         EvaluationRun run = new EvaluationRun(
                 target.getId(),
                 dataset.getId(),
@@ -171,6 +175,30 @@ public class RunService {
             throw new ConflictException(
                     "Execution queue is full (capacity " + executionProperties.queueCapacity()
                             + "); the run was marked INTERRUPTED — resume it when capacity is available");
+        }
+    }
+
+    /** Fails run creation fast when evaluator keys are unknown or the configuration map is malformed. */
+    private void validateEvaluatorSelection(CreateRunRequest request) {
+        if (request.enabledEvaluatorKeys() != null && !request.enabledEvaluatorKeys().isEmpty()) {
+            var known = evaluationPipeline.knownEvaluatorKeys();
+            List<String> unknown = request.enabledEvaluatorKeys().stream()
+                    .filter(key -> !known.contains(key))
+                    .toList();
+            if (!unknown.isEmpty()) {
+                throw new ValidationException(
+                        "Unknown evaluator key(s): " + String.join(", ", unknown),
+                        new FieldViolation(
+                                "enabledEvaluatorKeys",
+                                "unknown evaluator key(s) " + unknown + "; known keys: " + known));
+            }
+        }
+        try {
+            evaluationPipeline.validateEvaluatorConfiguration(request.evaluatorConfiguration());
+        } catch (IllegalArgumentException ex) {
+            throw new ValidationException(
+                    "Invalid evaluatorConfiguration: " + ex.getMessage(),
+                    new FieldViolation("evaluatorConfiguration", ex.getMessage()));
         }
     }
 

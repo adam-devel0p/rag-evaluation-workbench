@@ -290,7 +290,10 @@ class PersistenceIntegrationTest {
                 null,
                 null,
                 List.of(new EvaluationEvidence(
-                        "SUMMARY", "informational only", null, null, null, null, Map.of())));
+                        "SUMMARY", "informational only", null, null, null, null, Map.of())),
+                0.9,
+                true,
+                List.of(metricResult.getId()));
         findingRepository.save(finding);
 
         entityManager.flush();
@@ -323,6 +326,9 @@ class PersistenceIntegrationTest {
         EvaluationFinding reloadedFinding = findingRepository.findById(finding.getId()).orElseThrow();
         assertThat(reloadedFinding.getEvidence()).hasSize(1);
         assertThat(reloadedFinding.getCategory()).isEqualTo(FailureCategory.UNKNOWN);
+        assertThat(reloadedFinding.getConfidence()).isEqualTo(0.9);
+        assertThat(reloadedFinding.isRequiresHumanConfirmation()).isTrue();
+        assertThat(reloadedFinding.getSupportingMetricResultIds()).containsExactly(metricResult.getId());
 
         assertThat(dataset.getStatus()).isEqualTo(DatasetStatus.READY);
     }

@@ -5,10 +5,12 @@ full requirements and `CLAUDE.md` for non-negotiable constraints.
 
 ## Current status
 
-**Last completed phase:** 3 — Run orchestration
-**Next phase to run:** 4 — Deterministic evaluation
-**Build state:** `./mvnw clean verify` green (83/83 tests), no local Ollama required (Testcontainers
-starts its own Ollama and Postgres containers; Docker must be running for the Postgres-backed ITs).
+**Last completed phase:** 4 — Deterministic evaluation
+**Next phase to run:** 5 — Local LLM evaluation
+**Build state:** `./mvnw clean verify` green (161/161 tests), no local Ollama required (Docker must
+be running for the Postgres Testcontainers-backed ITs). Phase 4 checkpoint proven: the app
+produces evidence-backed metric results, findings, and an aggregated summary end to end with zero
+Ollama dependency (`EvaluationVerticalSliceIntegrationTest`).
 
 This header is the fast resume pointer — update it as the last step of every session. For the
 full history and reasoning behind each session's decisions, see "Session Log" in
@@ -108,16 +110,33 @@ as the first item in Phase 3's checklist below.
 
 ## Phase 4 — Deterministic evaluation
 
-- [ ] `EvaluationStrategy` domain interface (key/version/applicability/evaluate), independent of
-      Spring AI
-- [ ] TransportEvaluator, LatencyEvaluator (correct percentile impl + tests), RequiredFactsEvaluator,
+- [x] `EvaluationStrategy` domain interface (key/version/applicability/evaluate), independent of
+      Spring AI — `EvaluationApplicability` carries a real reason (APPLICABLE /
+      NOT_APPLICABLE / MISSING_REQUIRED_DATA + why), `EvaluationResult` rejects blank
+      explanations (no unexplained scores, enforced in the constructor)
+- [x] TransportEvaluator, LatencyEvaluator (correct percentile impl + tests), RequiredFactsEvaluator,
       ForbiddenClaimsEvaluator, RefusalEvaluator (phrase-based), CitationPresenceEvaluator,
       ExpectedDocumentEvaluator (Hit@K, MRR), CitationRetrievalConsistencyEvaluator,
-      AnswerabilityEvaluator
-- [ ] Aggregation service (denominators exclude evaluator errors; run-level stats per §18)
-- [ ] Evidence-based failure classification rules (§16)
-- [ ] Unit + integration tests
-- [ ] Checkpoint: app produces a useful report with zero Ollama dependency
+      AnswerabilityEvaluator — all nine wired into the run worker via the
+      `run.application.EvaluationPipeline` interface (implementation in
+      `classification.application`, keeping package dependencies acyclic)
+- [x] Aggregation service (denominators exclude evaluator errors; run-level stats per §18) —
+      `RunSummaryService` computed on demand at `GET /{id}/summary`; test-case outcomes
+      PASSED/FAILED/INCONCLUSIVE/NOT_EVALUATED per the spec default rule
+      (`TestCaseOutcomeCalculator`); zero-denominator rates are null, never 0/1
+- [x] Evidence-based failure classification rules (§16) — `FailureClassificationService`,
+      including the honest UNKNOWN ("Root cause: undetermined from black-box data") and the
+      deterministic §17 repetition-consistency comparison (INCONSISTENT_RESPONSE); migration 012
+      adds confidence / requires_human_confirmation / supporting_metric_result_ids to
+      `evaluation_finding`; served at `GET /{id}/findings`
+- [x] Unit + integration tests — 77 new unit tests (fact/claim matching, regex, refusal phrases,
+      Hit@K, reciprocal rank, citation/chunk consistency, percentiles, aggregation denominators,
+      outcome rules, classification rules, consistency analysis, evaluator-error handling) +
+      `EvaluationVerticalSliceIntegrationTest`
+- [x] Checkpoint: app produces a useful report with zero Ollama dependency — proven end to end:
+      import demo dataset → configure demo target → run with 2 repetitions → deterministic eval →
+      findings → aggregated summary, all through the real API, `./mvnw clean verify` green with
+      no Ollama
 
 ## Phase 5 — Local LLM evaluation
 

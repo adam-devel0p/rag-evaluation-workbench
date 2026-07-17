@@ -502,6 +502,128 @@ client content stays out of list payloads per the privacy defaults), `POST /api/
 (+`/csv`). Create/start/resume answer 202 with the current persisted run state; §21's
 `/metrics`, `/findings`, `/summary`, `/replay` arrive with Phases 4–7.
 
+## Phase 4 notes
+
+### Package cycle avoided by putting the pipeline interface in `run` and its implementation in `classification`
+
+The worker must call evaluation after each invocation, but `evaluation` already depends on
+`run.domain` (the context carries `EvaluationRun`/`TestExecution`), so a direct
+`RunWorker → EvaluationService` call would create a `run ↔ evaluation` package cycle. Resolution:
+`run.application.EvaluationPipeline` is a small interface owned by the run module
+(evaluate one execution / complete run evaluation / known keys / validate configuration), and its
+implementation `DeterministicEvaluationPipeline` lives in `classification.application` — the one
+package that already legitimately depends on both `evaluation` and `run`, making it the natural
+composition point. Dependency directions stay acyclic:
+`classification → evaluation → run → target`, `* → dataset/common`. For the same reason the
+`/metrics` + `/summary` endpoints live in `evaluation.api` and `/findings` in
+`classification.api`, not in `run.api`.
+
+### Metric statuses carry the three-way verdict; SKIPPED keeps the applicability reason
+
+`COMPLETED` + `passed=false` = the chatbot failed the metric; `FAILED` + `errorMessage` = the
+evaluator itself failed (never counted against the chatbot — enforced in
+`TestCaseOutcomeCalculator` and the aggregation denominators, both unit-tested); `SKIPPED` = not
+applicable or missing required data, with the `EvaluationApplicability` reason persisted as the
+explanation (e.g. "no retrieved chunks are available; from black-box data this cannot be
+distinguished from the target simply not exposing retrieval"). A crashing evaluator is caught per
+strategy inside `EvaluationService.runOne`, so one broken evaluator cannot take down the others or
+the run.
+
+### Answer-quality evaluators skip failed executions instead of failing them
+
+Spec §11.1: "Do not evaluate answer quality if transport failed." Implemented as applicability:
+every content evaluator answers `MISSING_REQUIRED_DATA` when the execution has no successful
+non-blank answer. Two deliberate exceptions: `TransportEvaluator` is always applicable (it *is*
+the judgment of the failure), and `RefusalEvaluator` stays applicable for `shouldRefuse` cases so
+it can record the spec's fourth classification (`EMPTY_OR_ERROR`) — an error response where a
+refusal was required is itself a distinguished outcome, though the finding side leaves the cause
+to the TARGET_SYSTEM_ERROR rule.
+
+### Confidence encodes evaluator-mechanism certainty; the 0.70 threshold routes review
+
+Exact string/regex/ID matching carries confidence 1.0. Phrase-heuristic verdicts carry less:
+correct refusal 0.7, missed-refusal-phrase 0.6, refusal-then-long-continuation 0.5, answerability
+signals 0.7/0.5. The central §14 subset in `EvaluationService` then flags for human review:
+confidence below `human-review-confidence-threshold` (0.70), any failed metric on a HIGH/CRITICAL
+test case, and any failed metric on a test case tagged security/permission-sensitive. This makes
+"phrase-based refusal detection is crude" an explicit, threshold-driven review trigger rather than
+hidden optimism. Remaining §14 triggers (evaluator disagreement, truncated context, missing
+reference answer) arrive with the Phase 5 LLM evaluators that make them computable.
+
+### Latency: per-execution verdict in the evaluator, percentiles in aggregation
+
+The latency evaluator judges one execution against `maximumAcceptableLatencyMilliseconds`
+(default 2000 ms, per-run overridable, <= 0 disables). Median/p90/p95/max are run-level facts and
+live in `RunSummaryService`, computed by `Percentiles` — linear interpolation between closest
+ranks (R-7, NumPy's default), unit-tested against hand-computed values including the even-size
+median.
+
+### Retrieval metrics ride on evidence metadata
+
+`ExpectedDocumentEvaluator` stores Hit@1/3/5, first relevant rank, and reciprocal rank in a
+`retrieval-metrics` evidence entry (typed key constants on the evaluator class). Aggregation and
+classification read those constants instead of re-deriving retrieval math from raw chunks —
+one implementation, one set of unit tests, no drift. The metric's score *is* the reciprocal rank.
+
+### Evaluator configuration: application defaults + per-run overrides, validated at creation
+
+`EvaluatorProperties` (`rag-evaluation.evaluator.*`) holds defaults; `EvaluatorSettingsFactory`
+overlays `EvaluationRun.evaluatorConfiguration` (documented override keys on the class). Citation
+policy resolves per test case: tag-scoped override map first (in the test case's own tag order),
+then the run/application default — spec §11.6's "by tag or dataset". Malformed configuration and
+unknown `enabledEvaluatorKeys` are rejected with 400 at run creation through the pipeline
+interface, so a queued run can never fail on unresolvable settings. Default citation policy is
+OPTIONAL: silently requiring citations of every arbitrary client bot would manufacture failures;
+a run opts in per tag or globally.
+
+### Classification: honest UNKNOWN is a rule, and §16's rule outputs got real columns
+
+`FailureClassificationService` implements the §16 rules over completed metric results (rules are
+exercised in unit tests against evidence produced by the real evaluators, so rules and evaluators
+cannot drift apart). Where black-box data proves only a symptom, the finding says "Root cause:
+undetermined from black-box data": the ranking rule explicitly names OUTDATED_DOCUMENT as the
+indistinguishable alternative and demands human confirmation; a mandatory-metric failure no rule
+explains becomes UNKNOWN (confidence 0.2, human confirmation required) rather than a guessed
+category. Because §16 requires each rule to produce confidence, supporting metric IDs, and a
+human-confirmation flag — and §6.8's field list predates that contract — migration 012 adds
+`confidence`, `requires_human_confirmation`, and `supporting_metric_result_ids` (JSONB) to
+`evaluation_finding` as additive columns; burying rule outputs in evidence metadata would have
+made them invisible to Phase 6's review workflow. Findings are delete-and-regenerated per run
+(`classifyRun`), so resumes never accumulate stale duplicates. Finding severity is the test
+case's severity — the impact weight of the question, the only severity signal black-box data has.
+
+### Repetition consistency (spec §17, deterministic part) landed with classification
+
+`RepetitionConsistencyAnalyzer` compares successful repetitions by fact-level signature —
+per-fact match outcomes, matched forbidden claims, refusal classification, cited document IDs,
+first relevant retrieval rank — exactly the deterministic comparison §17 prefers; wording
+variation is invisible by construction (unit-tested). A material difference yields an
+INCONSISTENT_RESPONSE finding anchored to the first successful repetition, and the summary's
+consistency rate (consistent / comparable multi-repetition test cases) comes from the same
+analyzer. The semantic comparison option stays with Phase 5.
+
+### Aggregation is computed on demand, not persisted
+
+Spec §6 defines no aggregate entity, and a stored aggregate can silently go stale as reviews land
+(Phase 6) or replays add runs. `GET /summary` computes `RunSummary` from persisted
+executions/metric results/reviews each time; every rate is reported next to its counts and a
+zero-denominator rate is `null`, never a fake number. Test-case outcome follows the spec §18
+default rule via `TestCaseOutcomeCalculator` (mandatory evaluators only: default
+transport/required-facts/forbidden-claims; failure beats evaluator-error beats not-evaluated;
+a test case is the worst of its repetitions). Groundedness/reference-correctness/completeness
+rates are deliberately absent until Phase 5 computes them — not approximated from deterministic
+data.
+
+### Evaluation timing: inline per execution, plus a completion sweep
+
+The worker evaluates each execution right after its result is persisted (incremental progress,
+crash-safe), and `completeRunEvaluation` sweeps any terminal-but-unevaluated executions before
+finalization — which is what makes resumed runs whole when a crash hit between invocation and
+evaluation. `evaluateExecution` is idempotent (skips executions that already have metric
+results), so replay/resume never double-evaluates. Evaluation and classification failures are
+logged and swallowed in the pipeline: they must never demote a run that successfully collected
+target evidence.
+
 ## Later phases
 
 To be filled in as Phases 3–8 land (orchestration model, evaluator wrapping decisions actually
@@ -724,3 +846,62 @@ lost context — read both before starting work.
   (`RunWorker` currently finalizes right after invocation — evaluation slots in between),
   aggregation with error-excluding denominators (§18), evidence-based failure classification
   (§16), and the Phase 4 checkpoint: a useful report with zero Ollama dependency.
+
+### Session 4 — 2026-07-17 — Phase 4: Deterministic evaluation ⭐ vertical-slice checkpoint
+
+- Reconciled first: re-ran `./mvnw clean verify` before starting — matched Session 3's log
+  exactly (BUILD SUCCESS, 83/83 tests), no reconciliation needed.
+- **Strategy abstraction (spec §10):** `EvaluationStrategy` / `EvaluationContext` /
+  `EvaluationResult` / `EvaluationApplicability` in `evaluation.domain`, Spring-AI-free.
+  Applicability answers with a reason, never a bare boolean; `EvaluationResult` rejects blank
+  explanations at construction — "no unexplained score" is enforced by the type, not by review.
+- **All nine deterministic evaluators (§11)** in `evaluation.deterministic`, each with its
+  evidence shape documented in "Phase 4 notes" above. Highlights: refusal matches multi-word
+  phrases only (bare "cannot" is not a refusal — unit-tested), combines phrase detection with the
+  test case's forbidden claims as the obvious-unsafe-disclosure check, and distinguishes all four
+  §11.5 outcomes; expected-documents is exact-ID-only with Hit@K/first-rank/MRR in typed evidence
+  metadata; citation-retrieval-consistency states in every explanation that it proves consistency,
+  not citation support.
+- **Pipeline wiring:** worker evaluates each execution right after persisting its result, then
+  `completeRunEvaluation` (sweep + classification) runs before finalization. Cycle-free via the
+  `run.application.EvaluationPipeline` interface implemented in `classification.application` —
+  see Phase 4 notes for the dependency-direction reasoning. Run creation now validates
+  `enabledEvaluatorKeys` and `evaluatorConfiguration` (400 with field violations on nonsense).
+- **Aggregation (§18):** `RunSummaryService` computes `GET /api/v1/evaluation-runs/{id}/summary`
+  on demand — per-metric counts with evaluator errors outside every pass-rate denominator,
+  test-case outcomes via the spec's default mandatory-evaluator rule, pass rates by tag/severity/
+  evaluator, Hit@K + MRR, latency median/p90/p95/max (`Percentiles`, R-7 interpolation),
+  target error rate, human-review backlog, deterministic consistency rate. LLM-dependent rates
+  deliberately absent until Phase 5.
+- **Classification (§16):** rules for TARGET_SYSTEM_ERROR, HIGH_LATENCY, RETRIEVAL_MISS,
+  RETRIEVAL_RANKING (with OUTDATED_DOCUMENT named as the undecidable alternative → human
+  confirmation), INCOMPLETE_ANSWER, INCORRECT_ANSWER, FAILED_REFUSAL (+UNSAFE_DISCLOSURE),
+  INCORRECT_CITATION, MISSING_CITATION, UNSUPPORTED_CLAIM (unanswerable answered confidently),
+  INCONSISTENT_RESPONSE (deterministic §17 comparison), and the honest UNKNOWN fallback with the
+  spec's "undetermined from black-box data" wording. Migration 012 adds the §16 rule outputs
+  (confidence, requires_human_confirmation, supporting_metric_result_ids) to `evaluation_finding`.
+- **API:** `GET /{id}/metrics` (paged), `GET /{id}/findings` (paged), `GET /{id}/summary`.
+  §21's remaining run endpoints (`/replay`) arrive with Phase 7.
+- **Deliberate Phase 1/3 touches (stated per the working agreement):** `EvaluationFinding`
+  constructor extended for the migration-012 columns (PersistenceIntegrationTest call site
+  updated + round-trip assertions added); `RunWorker`/`RunService` gained the pipeline
+  dependency; repositories gained run-scoped/paged query methods.
+- **Tests:** 161/161 green via `./mvnw clean verify`, Docker running, no local Ollama. 77 new
+  unit tests across evaluators, percentiles, outcome/denominator logic, classification rules,
+  and consistency analysis (classification rules are tested against evidence produced by the
+  real evaluators, so rules and evaluators cannot drift apart). New
+  `EvaluationVerticalSliceIntegrationTest` proves the Phase 4 checkpoint end to end: API-imported
+  demo dataset → real HTTP demo target → run with 2 repetitions → deterministic evaluation →
+  findings → summary, asserting per-scenario metric verdicts, all §16 finding categories the
+  demo rigs, exact outcome counts (6 passed / 8 failed / 0 inconclusive of 14), and zero
+  evaluator errors — with no Ollama anywhere.
+- **Deferred deliberately:** SEMANTIC fact matching, LLM evaluators, semantic refusal, §14's
+  LLM-dependent review triggers, calibration dataset + agreement service (spec §14 places them
+  with the LLM evaluation work), report rendering (Phase 6), replay endpoint (Phase 7).
+- **Next step:** Phase 5 — local LLM evaluation. Start from the Phase 0 API-surface findings
+  ("Spring AI 2.0.0 evaluator API" above): Ollama config via env vars with the app starting fine
+  without Ollama, the structured judge client abstraction + deterministic fake for tests, then
+  the eight LLM evaluators as `EvaluationStrategy` implementations (custom structured-output
+  primary, Spring AI evaluators optional secondary), untrusted-content prompt delimiters,
+  configurable context truncation recorded in metadata, graceful degradation to metric-status
+  FAILED when Ollama is down, and the `-Pollama-it` Maven profile.
