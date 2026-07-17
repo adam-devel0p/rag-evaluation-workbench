@@ -1,0 +1,139 @@
+databaseChangeLog:
+  - changeSet:
+      id: 001-01-create-target-system
+      author: workbench
+      changes:
+        - createTable:
+            tableName: target_system
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: name
+                  type: VARCHAR(255)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: description
+                  type: TEXT
+              - column:
+                  name: adapter_type
+                  type: VARCHAR(30)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: endpoint_url
+                  type: VARCHAR(2048)
+              - column:
+                  name: http_method
+                  type: VARCHAR(10)
+              - column:
+                  name: request_template
+                  type: JSONB
+              - column:
+                  name: answer_json_pointer
+                  type: VARCHAR(500)
+              - column:
+                  name: citations_json_pointer
+                  type: VARCHAR(500)
+              - column:
+                  name: retrieved_chunks_json_pointer
+                  type: VARCHAR(500)
+              - column:
+                  name: model_json_pointer
+                  type: VARCHAR(500)
+              - column:
+                  name: enabled
+                  type: BOOLEAN
+                  defaultValueBoolean: true
+                  constraints:
+                    nullable: false
+              - column:
+                  name: timeout_milliseconds
+                  type: INT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: maximum_concurrency
+                  type: INT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: authentication_type
+                  type: VARCHAR(30)
+                  defaultValue: NONE
+                  constraints:
+                    nullable: false
+              - column:
+                  name: secret_environment_variable
+                  type: VARCHAR(255)
+              - column:
+                  name: api_key_header_name
+                  type: VARCHAR(255)
+              - column:
+                  name: created_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+              - column:
+                  name: version
+                  type: BIGINT
+                  defaultValueNumeric: 0
+                  constraints:
+                    nullable: false
+  - changeSet:
+      id: 001-02-target-system-check-constraints
+      author: workbench
+      changes:
+        - sql:
+            sql: >-
+              ALTER TABLE target_system
+              ADD CONSTRAINT chk_target_system_adapter_type
+              CHECK (adapter_type IN ('STANDARD_HTTP', 'IMPORTED_TRACE'));
+        - sql:
+            sql: >-
+              ALTER TABLE target_system
+              ADD CONSTRAINT chk_target_system_authentication_type
+              CHECK (authentication_type IN ('NONE', 'BEARER_TOKEN', 'API_KEY_HEADER'));
+        - sql:
+            sql: >-
+              ALTER TABLE target_system
+              ADD CONSTRAINT chk_target_system_http_method
+              CHECK (http_method IS NULL OR http_method IN ('GET', 'POST', 'PUT', 'PATCH'));
+        - sql:
+            sql: >-
+              ALTER TABLE target_system
+              ADD CONSTRAINT chk_target_system_standard_http_endpoint
+              CHECK (adapter_type <> 'STANDARD_HTTP' OR endpoint_url IS NOT NULL);
+        - sql:
+            sql: >-
+              ALTER TABLE target_system
+              ADD CONSTRAINT chk_target_system_timeout_positive
+              CHECK (timeout_milliseconds > 0);
+        - sql:
+            sql: >-
+              ALTER TABLE target_system
+              ADD CONSTRAINT chk_target_system_concurrency_positive
+              CHECK (maximum_concurrency > 0);
+      rollback:
+        - sql:
+            sql: ALTER TABLE target_system DROP CONSTRAINT chk_target_system_adapter_type;
+        - sql:
+            sql: ALTER TABLE target_system DROP CONSTRAINT chk_target_system_authentication_type;
+        - sql:
+            sql: ALTER TABLE target_system DROP CONSTRAINT chk_target_system_http_method;
+        - sql:
+            sql: ALTER TABLE target_system DROP CONSTRAINT chk_target_system_standard_http_endpoint;
+        - sql:
+            sql: ALTER TABLE target_system DROP CONSTRAINT chk_target_system_timeout_positive;
+        - sql:
+            sql: ALTER TABLE target_system DROP CONSTRAINT chk_target_system_concurrency_positive;

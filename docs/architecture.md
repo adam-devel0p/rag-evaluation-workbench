@@ -140,12 +140,111 @@ Only the base package and application class exist so far. The full module layout
 `review`, `report`, `comparison`, `configuration`) is created starting Phase 1, driven by the
 persistence model.
 
+## Phase 1 notes
+
+### JSONB mapping: Hibernate's built-in Jackson 3 format mapper, not a hand-rolled converter
+
+Verified (not assumed) by inspecting the resolved `hibernate-core-7.4.1.Final.jar` with `javap`:
+Hibernate 7.4.1 ships `org.hibernate.type.format.jackson.Jackson3JsonFormatMapper`, which targets
+`tools.jackson.databind.json.JsonMapper` (Jackson 3) directly, alongside the classic
+`JacksonJsonFormatMapper` (Jackson 2). `JacksonIntegration` auto-detects which one to register as
+the default `hibernate.type.json_format_mapper` based on what's actually on the classpath. Checked
+`./mvnw dependency:tree`: the project has `tools.jackson.core:jackson-databind:3.1.4` but no
+`com.fasterxml.jackson.core:jackson-databind` (2.x) — only `jackson-annotations:2.21`, which
+Jackson 3 itself depends on for annotation compatibility, not a competing databind. So Hibernate's
+auto-detection resolves to `Jackson3JsonFormatMapper` with zero extra configuration.
+
+Consequence: entity fields annotated `@JdbcTypeCode(SqlTypes.JSON)` map directly to Java
+records / `List<record>` / `Map<String,Object>` / `tools.jackson.databind.JsonNode` — no manual
+`AttributeConverter`, no `String` intermediate column type. Confirmed working end-to-end (not just
+compiling) by `PersistenceIntegrationTest`, which persists and reloads every JSONB-mapped field
+across the full entity graph.
+
+### JSON field type choices
+
+Three different Java shapes were used for JSONB columns, chosen per how the data is actually
+consumed downstream:
+
+- **Structured records** (`ExpectedFact`, `Citation`, `RetrievedChunk`, `EvaluationEvidence`) for
+  fields with a spec-defined shape — used as `List<Record>` fields on `EvaluationTestCase`,
+  `TestExecution`, `EvaluationMetricResult`, `EvaluationFinding`. Gives compile-time safety
+  wherever these are read/written.
+- **`tools.jackson.databind.JsonNode`** for fields that are genuinely opaque, arbitrary-shaped JSON
+  that Phase 2's request-templating/JSON-Pointer code needs to walk as a tree:
+  `TargetSystem.requestTemplate`, `TestExecution.requestPayload`, `TestExecution.rawResponse`.
+  Matches the CLAUDE.md instruction to write Jackson-tree-traversal code, not string-substitution,
+  against these fields.
+- **`Map<String,Object>` / `List<String>`** for simple flexible data with no tree-walking need:
+  `EvaluationTestCase.userContext`, `EvaluationRun.evaluatorConfiguration`,
+  `EvaluationTestCase.tags` / `expectedDocumentIds`, `EvaluationRun.enabledEvaluatorKeys`.
+
+### `@Version` placement follows the spec's own field lists, not a blanket rule
+
+CLAUDE.md says "`@Version` optimistic locking on mutable aggregates," which could read as "every
+entity." Spec section 6 is more precise: `TargetSystem`, `EvaluationDataset`, and `EvaluationRun`
+explicitly list `version` in their required-fields block; `EvaluationTestCase`, `TestExecution`,
+`EvaluationMetricResult`, `HumanReview`, and `EvaluationFinding` do not. Followed the spec's
+explicit lists: `EvaluationTestCase` is part of the `EvaluationDataset` aggregate (a `READY`
+dataset rejects test-case edits outright — see `EvaluationDataset.isModifiable()` — so the
+dataset's own version is the concurrency boundary, not an independent one on each test case).
+`TestExecution`, `EvaluationMetricResult`, `HumanReview`, and `EvaluationFinding` are effectively
+append-only/immutable once created (no update endpoints for them in spec §21 — `HumanReview`
+creation is itself the "update" mechanism, layered on top without touching the automated result),
+so optimistic locking doesn't apply.
+
+### FK delete behavior
+
+- `evaluation_test_case.dataset_id` → `evaluation_dataset.id`: `ON DELETE CASCADE`. Test cases are
+  owned by their dataset; there's no standalone lifecycle for one without the other.
+- `evaluation_run.target_system_id` / `evaluation_run.dataset_id`: default `NO ACTION` (no
+  `onDelete` specified). Matches spec §21: "Delete should be rejected when historical runs depend
+  on the target. Prefer disabling it." The FK gives a hard backstop; Phase 2's target/dataset
+  delete endpoints are expected to check for dependent runs first and return a friendlier error.
+- `test_execution.evaluation_run_id` → `evaluation_run.id`: `ON DELETE CASCADE`. Executions have no
+  meaning outside their run; deleting a run (spec §23's run-deletion requirement, Phase 8) should
+  take its executions with it.
+- `test_execution.test_case_id`: default `NO ACTION`, same reasoning as target/dataset above —
+  historical executions shouldn't be orphaned by a test-case edit/removal path introduced later.
+- `test_execution.source_execution_id` (self-referential, used by `REPLAY` runs): `ON DELETE SET
+  NULL`. Avoids blocking deletion of an original run's executions just because a later replay run
+  references them.
+- `evaluation_metric_result.test_execution_id`, `human_review.metric_result_id`,
+  `evaluation_finding.evaluation_run_id` / `evaluation_finding.test_execution_id`: all `ON DELETE
+  CASCADE` — these are all pure child data with no independent meaning.
+
+### `EvaluationFinding.testExecutionId` kept non-nullable
+
+Spec §6.8 lists `testExecutionId` as a required field with no hedge about run-level findings. Kept
+it `NOT NULL` rather than speculatively making it nullable for a hypothetical future run-wide
+finding type (e.g. an aggregate "high latency across the run" finding). If Phase 6 needs run-level
+findings not tied to one execution, that's a deliberate, documented schema change then — not a
+guess now.
+
+### Package placement judgment calls
+
+- Spring Data JPA repository interfaces live in each module's `infrastructure` package, not
+  `domain` — they're a JPA-specific persistence detail, not the entity/value-object model itself.
+- `Severity` lives in `dataset.domain` (it's first defined there, on `EvaluationTestCase`) and is
+  reused by `classification.domain.EvaluationFinding` via a plain cross-package import — CLAUDE.md
+  warns against over-applying DDD/creating meaningless interfaces, so no shared `common.domain`
+  module was invented just to host one shared enum.
+- `EvaluationFinding` lives under `classification.domain` (matches the flat `classification`
+  package CLAUDE.md's tree already names), not under `evaluation`, since it's produced by Phase 4's
+  failure-classification rules rather than by an individual evaluator.
+
+### Also fixed while here
+
+Added `spring.jpa.open-in-view=false` to `application.properties`. Not spec-mandated, but Phase 0's
+build log showed Spring Boot's default-open-in-view warning on every startup; disabling it is the
+standard fix and costs nothing at this phase (no view-layer code exists yet to depend on the
+lazy-loading-in-view behavior it enables).
+
 ## Later phases
 
-To be filled in as Phases 1–8 land (schema design rationale, orchestration model, evaluator
-wrapping decisions actually implemented, comparison semantics, etc). Each phase gets its own
-`## Phase N notes` section above this one with the reasoning behind decisions; the Session Log
-below is the short chronological index into that detail.
+To be filled in as Phases 2–8 land (orchestration model, evaluator wrapping decisions actually
+implemented, comparison semantics, etc). Each phase gets its own `## Phase N notes` section above
+this one with the reasoning behind decisions; the Session Log below is the short chronological
+index into that detail.
 
 ## Session Log
 
@@ -175,3 +274,55 @@ lost context — read both before starting work.
 - **Next step:** Phase 1 — persistence foundation. Start with the Liquibase schema under
   `src/main/resources/db/changelog/`, then domain entities per spec §6, then repositories, then
   Testcontainers PostgreSQL integration tests. Docker must be running locally for those tests.
+
+### Session 1 — 2026-07-17 — Phase 1: Persistence foundation
+
+- Reconciled first: re-ran `./mvnw clean verify` before starting (Docker confirmed running); it
+  matched the Session 0 log exactly (BUILD SUCCESS, 1/1 test), so no reconciliation was needed.
+- Liquibase: replaced the Phase 0 placeholder root changelog with one that includes 8
+  logically-separated changelogs under `db/changelog/changes/` (one per aggregate table, in FK
+  dependency order). Each table's changeset is split into create-table / foreign-keys / check
+  constraints / indexes sub-changesets so failures are easy to localize. All check constraints use
+  raw `sql` changes (enum-value `IN (...)` lists, positive-number bounds, score/confidence
+  `[0,1]` ranges, a conditional constraint requiring `endpoint_url` when `adapter_type =
+  'STANDARD_HTTP'`), since Liquibase's YAML column-constraint block doesn't support arbitrary
+  check expressions. See "Phase 1 notes" above for the FK delete-behavior rationale per table.
+- Domain entities: all 8 aggregates from spec §6 created as JPA entities (protected no-arg
+  constructor for JPA, public constructor generating `UUID.randomUUID()` + setting
+  `Instant.now()` timestamps, plain getters, a handful of state-transition methods where the spec
+  implies one — e.g. `EvaluationDataset.markReady()`, `EvaluationRun.markStarted()`). Package
+  placement: `target.domain`, `dataset.domain`, `run.domain`, `evaluation.domain`,
+  `review.domain`, `classification.domain`, each paired with an `infrastructure` package holding
+  the Spring Data JPA repository. Rationale for placement/​`@Version` choices in "Phase 1 notes".
+- JSONB: verified Hibernate 7.4.1's built-in Jackson 3 format-mapper support via `javap` against
+  the resolved jar (not assumed) before writing any mapping code — see "Phase 1 notes" for the
+  evidence and the resulting `@JdbcTypeCode(SqlTypes.JSON)` usage across records / `JsonNode` /
+  `Map` / `List<String>` fields.
+- Testcontainers: added a Postgres-only `@TestConfiguration`
+  (`persistence/PostgresTestcontainersConfiguration`) separate from the existing app-wide
+  `TestcontainersConfiguration`, so the new persistence IT doesn't pay for an Ollama container it
+  doesn't need. `PersistenceIntegrationTest` (4 tests) proves: context starts against the migrated
+  schema with `ddl-auto=validate` (implicit — context startup fails otherwise), and every
+  JSONB-mapped field round-trips correctly, including a full-graph test that chains
+  TargetSystem → EvaluationDataset → EvaluationTestCase → EvaluationRun → TestExecution →
+  EvaluationMetricResult → HumanReview + EvaluationFinding through `entityManager.flush()` +
+  `clear()` before reloading.
+- Also set `spring.jpa.open-in-view=false` (fixes a Phase 0 startup warning; see "Phase 1 notes").
+- `./mvnw clean verify`: BUILD SUCCESS, 5/5 tests (1 context-loads + 4 persistence IT), Docker
+  running, no local Ollama daemon required (both the existing context test and the new persistence
+  test use Testcontainers-managed containers, not an external Ollama).
+- `git status` after the run: only the expected new/modified files (see diff), nothing stray.
+- **Deferred to Phase 2, deliberately not built now:** anything DTO/validation/API-boundary
+  related, the `TargetSystemAdapter` abstraction and HTTP adapter, dataset JSON/CSV import,
+  target CRUD/connection-test, WireMock tests. Also deferred: any additional `TargetSystem` columns
+  Phase 2's HTTP adapter will need for non-standard response shapes (per-field JSON pointers for
+  citations/chunks, input/output-token pointers) — spec §8.1 describes these as adapter
+  configuration, not part of §6.1's core required-fields list, so they arrive as an additive
+  Liquibase migration in Phase 2 rather than being guessed at here.
+- **Next step:** Phase 2 — dataset and target configuration. Start with DTOs + validation (no JPA
+  entities crossing the API boundary — architecture test coverage for this arrives with the
+  Phase 2/6 ArchUnit checks), then dataset JSON/CSV import (transactional, all-or-nothing per spec
+  §9), then target CRUD + connection-test, then the `TargetSystemAdapter` interface and the
+  Standard HTTP adapter (Jackson-tree placeholder substitution — reuse the `JsonNode` mapping
+  already in place on `TargetSystem.requestTemplate` — plus JSON Pointer response extraction),
+  then WireMock adapter tests per spec §28.3.

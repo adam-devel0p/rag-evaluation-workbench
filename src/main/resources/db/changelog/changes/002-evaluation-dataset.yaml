@@ -1,0 +1,61 @@
+databaseChangeLog:
+  - changeSet:
+      id: 002-01-create-evaluation-dataset
+      author: workbench
+      changes:
+        - createTable:
+            tableName: evaluation_dataset
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: name
+                  type: VARCHAR(255)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: description
+                  type: TEXT
+              - column:
+                  name: dataset_version
+                  type: VARCHAR(100)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: VARCHAR(20)
+                  defaultValue: DRAFT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+              - column:
+                  name: version
+                  type: BIGINT
+                  defaultValueNumeric: 0
+                  constraints:
+                    nullable: false
+  - changeSet:
+      id: 002-02-evaluation-dataset-check-constraints
+      author: workbench
+      changes:
+        - sql:
+            sql: >-
+              ALTER TABLE evaluation_dataset
+              ADD CONSTRAINT chk_evaluation_dataset_status
+              CHECK (status IN ('DRAFT', 'READY', 'ARCHIVED'));
+      rollback:
+        - sql:
+            sql: ALTER TABLE evaluation_dataset DROP CONSTRAINT chk_evaluation_dataset_status;

@@ -5,9 +5,10 @@ full requirements and `CLAUDE.md` for non-negotiable constraints.
 
 ## Current status
 
-**Last completed phase:** 0 — Inspect and set up
-**Next phase to run:** 1 — Persistence foundation
-**Build state:** `./mvnw clean verify` green, no Ollama required.
+**Last completed phase:** 1 — Persistence foundation
+**Next phase to run:** 2 — Dataset and target configuration
+**Build state:** `./mvnw clean verify` green (5/5 tests), no local Ollama required (Testcontainers
+starts its own Ollama and Postgres containers).
 
 This header is the fast resume pointer — update it as the last step of every session. For the
 full history and reasoning behind each session's decisions, see "Session Log" in
@@ -41,15 +42,18 @@ README, `.env.example`, `compose.yaml`, `examples/`, `scripts/`. These start in 
 
 ## Phase 1 — Persistence foundation
 
-- [ ] Liquibase schema (root changelog + included changelogs) under
-      `src/main/resources/db/changelog/`
-- [ ] Domain entities: TargetSystem, EvaluationDataset, EvaluationTestCase, EvaluationRun,
+- [x] Liquibase schema (root changelog + included changelogs) under
+      `src/main/resources/db/changelog/` (8 included changelogs, one per aggregate table)
+- [x] Domain entities: TargetSystem, EvaluationDataset, EvaluationTestCase, EvaluationRun,
       TestExecution, EvaluationMetricResult, HumanReview, EvaluationFinding
-- [ ] UUID PKs, FKs, indexes, check constraints, unique constraint (dataset + external test-case ID)
-- [ ] JSONB mapping compatible with Hibernate 7 / Spring Boot 4.1, verified by an integration test
-- [ ] Repositories (Spring Data JPA)
-- [ ] `spring.jpa.hibernate.ddl-auto=validate`
-- [ ] Testcontainers PostgreSQL integration tests (migrations run, JSONB round-trips)
+- [x] UUID PKs, FKs, indexes, check constraints, unique constraint (dataset + external test-case ID)
+- [x] JSONB mapping compatible with Hibernate 7 / Spring Boot 4.1, verified by an integration test
+      (Hibernate 7.4.1's built-in `Jackson3JsonFormatMapper`, auto-selected since only Jackson 3 is
+      on the classpath — see "Phase 1 notes" below)
+- [x] Repositories (Spring Data JPA)
+- [x] `spring.jpa.hibernate.ddl-auto=validate`
+- [x] Testcontainers PostgreSQL integration tests (migrations run, JSONB round-trips) —
+      `PersistenceIntegrationTest`, 4 tests, Postgres-only Testcontainers config (no Ollama)
 
 ## Phase 2 — Dataset and target configuration
 

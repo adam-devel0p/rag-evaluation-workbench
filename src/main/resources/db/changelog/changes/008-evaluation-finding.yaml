@@ -1,0 +1,125 @@
+databaseChangeLog:
+  - changeSet:
+      id: 008-01-create-evaluation-finding
+      author: workbench
+      changes:
+        - createTable:
+            tableName: evaluation_finding
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: evaluation_run_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: test_execution_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: category
+                  type: VARCHAR(50)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: severity
+                  type: VARCHAR(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: title
+                  type: VARCHAR(500)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: summary
+                  type: TEXT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: likely_cause
+                  type: TEXT
+              - column:
+                  name: recommendation
+                  type: TEXT
+              - column:
+                  name: acceptance_criteria
+                  type: TEXT
+              - column:
+                  name: evidence
+                  type: JSONB
+              - column:
+                  name: human_confirmed
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+  - changeSet:
+      id: 008-02-evaluation-finding-foreign-keys
+      author: workbench
+      changes:
+        - addForeignKeyConstraint:
+            baseTableName: evaluation_finding
+            baseColumnNames: evaluation_run_id
+            constraintName: fk_finding_run
+            referencedTableName: evaluation_run
+            referencedColumnNames: id
+            onDelete: CASCADE
+        - addForeignKeyConstraint:
+            baseTableName: evaluation_finding
+            baseColumnNames: test_execution_id
+            constraintName: fk_finding_execution
+            referencedTableName: test_execution
+            referencedColumnNames: id
+            onDelete: CASCADE
+  - changeSet:
+      id: 008-03-evaluation-finding-check-constraints
+      author: workbench
+      changes:
+        - sql:
+            sql: >-
+              ALTER TABLE evaluation_finding
+              ADD CONSTRAINT chk_finding_category
+              CHECK (category IN ('TARGET_SYSTEM_ERROR', 'MISSING_DOCUMENTATION', 'OUTDATED_DOCUMENT',
+                                   'RETRIEVAL_MISS', 'RETRIEVAL_RANKING', 'IRRELEVANT_CONTEXT',
+                                   'UNSUPPORTED_CLAIM', 'INCORRECT_ANSWER', 'INCOMPLETE_ANSWER',
+                                   'INCORRECT_CITATION', 'MISSING_CITATION', 'FAILED_REFUSAL',
+                                   'UNSAFE_DISCLOSURE', 'ACCESS_CONTROL_RISK', 'INCONSISTENT_RESPONSE',
+                                   'HIGH_LATENCY', 'EVALUATOR_DISAGREEMENT', 'UNKNOWN'));
+        - sql:
+            sql: >-
+              ALTER TABLE evaluation_finding
+              ADD CONSTRAINT chk_finding_severity
+              CHECK (severity IN ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL'));
+      rollback:
+        - sql:
+            sql: ALTER TABLE evaluation_finding DROP CONSTRAINT chk_finding_category;
+        - sql:
+            sql: ALTER TABLE evaluation_finding DROP CONSTRAINT chk_finding_severity;
+  - changeSet:
+      id: 008-04-evaluation-finding-indexes
+      author: workbench
+      changes:
+        - createIndex:
+            indexName: idx_finding_run_id
+            tableName: evaluation_finding
+            columns:
+              - column:
+                  name: evaluation_run_id
+        - createIndex:
+            indexName: idx_finding_execution_id
+            tableName: evaluation_finding
+            columns:
+              - column:
+                  name: test_execution_id

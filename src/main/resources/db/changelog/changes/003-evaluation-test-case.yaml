@@ -1,0 +1,125 @@
+databaseChangeLog:
+  - changeSet:
+      id: 003-01-create-evaluation-test-case
+      author: workbench
+      changes:
+        - createTable:
+            tableName: evaluation_test_case
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: dataset_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: external_id
+                  type: VARCHAR(255)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: question
+                  type: TEXT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: reference_answer
+                  type: TEXT
+              - column:
+                  name: answerable
+                  type: BOOLEAN
+                  constraints:
+                    nullable: false
+              - column:
+                  name: should_refuse
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false
+              - column:
+                  name: severity
+                  type: VARCHAR(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: required_facts
+                  type: JSONB
+                  constraints:
+                    nullable: false
+              - column:
+                  name: forbidden_claims
+                  type: JSONB
+                  constraints:
+                    nullable: false
+              - column:
+                  name: expected_document_ids
+                  type: JSONB
+                  constraints:
+                    nullable: false
+              - column:
+                  name: tags
+                  type: JSONB
+                  constraints:
+                    nullable: false
+              - column:
+                  name: user_context
+                  type: JSONB
+              - column:
+                  name: notes
+                  type: TEXT
+              - column:
+                  name: created_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+  - changeSet:
+      id: 003-02-evaluation-test-case-foreign-key
+      author: workbench
+      changes:
+        - addForeignKeyConstraint:
+            baseTableName: evaluation_test_case
+            baseColumnNames: dataset_id
+            constraintName: fk_test_case_dataset
+            referencedTableName: evaluation_dataset
+            referencedColumnNames: id
+            onDelete: CASCADE
+  - changeSet:
+      id: 003-03-evaluation-test-case-unique-external-id
+      author: workbench
+      changes:
+        - addUniqueConstraint:
+            tableName: evaluation_test_case
+            columnNames: dataset_id, external_id
+            constraintName: uq_test_case_dataset_external_id
+  - changeSet:
+      id: 003-04-evaluation-test-case-check-constraints
+      author: workbench
+      changes:
+        - sql:
+            sql: >-
+              ALTER TABLE evaluation_test_case
+              ADD CONSTRAINT chk_test_case_severity
+              CHECK (severity IN ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL'));
+      rollback:
+        - sql:
+            sql: ALTER TABLE evaluation_test_case DROP CONSTRAINT chk_test_case_severity;
+  - changeSet:
+      id: 003-05-evaluation-test-case-index-dataset
+      author: workbench
+      changes:
+        - createIndex:
+            indexName: idx_test_case_dataset_id
+            tableName: evaluation_test_case
+            columns:
+              - column:
+                  name: dataset_id

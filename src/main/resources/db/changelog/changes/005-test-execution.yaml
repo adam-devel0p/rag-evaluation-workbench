@@ -1,0 +1,140 @@
+databaseChangeLog:
+  - changeSet:
+      id: 005-01-create-test-execution
+      author: workbench
+      changes:
+        - createTable:
+            tableName: test_execution
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: evaluation_run_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: test_case_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: source_execution_id
+                  type: UUID
+              - column:
+                  name: repetition_number
+                  type: INT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: VARCHAR(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: request_payload
+                  type: JSONB
+              - column:
+                  name: answer
+                  type: TEXT
+              - column:
+                  name: raw_response
+                  type: JSONB
+              - column:
+                  name: citations
+                  type: JSONB
+              - column:
+                  name: retrieved_chunks
+                  type: JSONB
+              - column:
+                  name: target_model
+                  type: VARCHAR(255)
+              - column:
+                  name: latency_milliseconds
+                  type: BIGINT
+              - column:
+                  name: input_tokens
+                  type: INT
+              - column:
+                  name: output_tokens
+                  type: INT
+              - column:
+                  name: started_at
+                  type: TIMESTAMP WITH TIME ZONE
+              - column:
+                  name: completed_at
+                  type: TIMESTAMP WITH TIME ZONE
+              - column:
+                  name: error_type
+                  type: VARCHAR(255)
+              - column:
+                  name: error_message
+                  type: TEXT
+              - column:
+                  name: http_status
+                  type: INT
+              - column:
+                  name: created_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+  - changeSet:
+      id: 005-02-test-execution-foreign-keys
+      author: workbench
+      changes:
+        - addForeignKeyConstraint:
+            baseTableName: test_execution
+            baseColumnNames: evaluation_run_id
+            constraintName: fk_execution_run
+            referencedTableName: evaluation_run
+            referencedColumnNames: id
+            onDelete: CASCADE
+        - addForeignKeyConstraint:
+            baseTableName: test_execution
+            baseColumnNames: test_case_id
+            constraintName: fk_execution_test_case
+            referencedTableName: evaluation_test_case
+            referencedColumnNames: id
+        - addForeignKeyConstraint:
+            baseTableName: test_execution
+            baseColumnNames: source_execution_id
+            constraintName: fk_execution_source_execution
+            referencedTableName: test_execution
+            referencedColumnNames: id
+            onDelete: SET NULL
+  - changeSet:
+      id: 005-03-test-execution-check-constraints
+      author: workbench
+      changes:
+        - sql:
+            sql: >-
+              ALTER TABLE test_execution
+              ADD CONSTRAINT chk_execution_status
+              CHECK (status IN ('PENDING', 'RUNNING', 'SUCCEEDED', 'TIMED_OUT', 'TARGET_ERROR',
+                                 'INVALID_RESPONSE', 'CANCELLED'));
+        - sql:
+            sql: >-
+              ALTER TABLE test_execution
+              ADD CONSTRAINT chk_execution_repetition_positive
+              CHECK (repetition_number > 0);
+      rollback:
+        - sql:
+            sql: ALTER TABLE test_execution DROP CONSTRAINT chk_execution_status;
+        - sql:
+            sql: ALTER TABLE test_execution DROP CONSTRAINT chk_execution_repetition_positive;
+  - changeSet:
+      id: 005-04-test-execution-index-run-test-case
+      author: workbench
+      changes:
+        - createIndex:
+            indexName: idx_execution_run_test_case
+            tableName: test_execution
+            columns:
+              - column:
+                  name: evaluation_run_id
+              - column:
+                  name: test_case_id

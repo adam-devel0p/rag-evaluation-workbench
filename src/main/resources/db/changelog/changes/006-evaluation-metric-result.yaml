@@ -1,0 +1,133 @@
+databaseChangeLog:
+  - changeSet:
+      id: 006-01-create-evaluation-metric-result
+      author: workbench
+      changes:
+        - createTable:
+            tableName: evaluation_metric_result
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: test_execution_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: evaluator_key
+                  type: VARCHAR(100)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: evaluator_type
+                  type: VARCHAR(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: evaluator_version
+                  type: VARCHAR(50)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: evaluator_model
+                  type: VARCHAR(255)
+              - column:
+                  name: prompt_version
+                  type: VARCHAR(50)
+              - column:
+                  name: status
+                  type: VARCHAR(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: passed
+                  type: BOOLEAN
+              - column:
+                  name: score
+                  type: DOUBLE
+              - column:
+                  name: confidence
+                  type: DOUBLE
+              - column:
+                  name: explanation
+                  type: TEXT
+              - column:
+                  name: evidence
+                  type: JSONB
+              - column:
+                  name: requires_human_review
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false
+              - column:
+                  name: duration_milliseconds
+                  type: BIGINT
+              - column:
+                  name: created_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+              - column:
+                  name: error_message
+                  type: TEXT
+  - changeSet:
+      id: 006-02-evaluation-metric-result-foreign-key
+      author: workbench
+      changes:
+        - addForeignKeyConstraint:
+            baseTableName: evaluation_metric_result
+            baseColumnNames: test_execution_id
+            constraintName: fk_metric_result_execution
+            referencedTableName: test_execution
+            referencedColumnNames: id
+            onDelete: CASCADE
+  - changeSet:
+      id: 006-03-evaluation-metric-result-check-constraints
+      author: workbench
+      changes:
+        - sql:
+            sql: >-
+              ALTER TABLE evaluation_metric_result
+              ADD CONSTRAINT chk_metric_result_evaluator_type
+              CHECK (evaluator_type IN ('DETERMINISTIC', 'LLM', 'HUMAN', 'AGGREGATED'));
+        - sql:
+            sql: >-
+              ALTER TABLE evaluation_metric_result
+              ADD CONSTRAINT chk_metric_result_status
+              CHECK (status IN ('COMPLETED', 'SKIPPED', 'FAILED'));
+        - sql:
+            sql: >-
+              ALTER TABLE evaluation_metric_result
+              ADD CONSTRAINT chk_metric_result_score_range
+              CHECK (score IS NULL OR (score >= 0.0 AND score <= 1.0));
+        - sql:
+            sql: >-
+              ALTER TABLE evaluation_metric_result
+              ADD CONSTRAINT chk_metric_result_confidence_range
+              CHECK (confidence IS NULL OR (confidence >= 0.0 AND confidence <= 1.0));
+      rollback:
+        - sql:
+            sql: ALTER TABLE evaluation_metric_result DROP CONSTRAINT chk_metric_result_evaluator_type;
+        - sql:
+            sql: ALTER TABLE evaluation_metric_result DROP CONSTRAINT chk_metric_result_status;
+        - sql:
+            sql: ALTER TABLE evaluation_metric_result DROP CONSTRAINT chk_metric_result_score_range;
+        - sql:
+            sql: ALTER TABLE evaluation_metric_result DROP CONSTRAINT chk_metric_result_confidence_range;
+  - changeSet:
+      id: 006-04-evaluation-metric-result-index-execution-evaluator-key
+      author: workbench
+      changes:
+        - createIndex:
+            indexName: idx_metric_result_execution_evaluator_key
+            tableName: evaluation_metric_result
+            columns:
+              - column:
+                  name: test_execution_id
+              - column:
+                  name: evaluator_key

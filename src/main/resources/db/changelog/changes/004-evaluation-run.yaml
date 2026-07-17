@@ -1,0 +1,142 @@
+databaseChangeLog:
+  - changeSet:
+      id: 004-01-create-evaluation-run
+      author: workbench
+      changes:
+        - createTable:
+            tableName: evaluation_run
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: target_system_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: dataset_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: name
+                  type: VARCHAR(255)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: VARCHAR(30)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: run_mode
+                  type: VARCHAR(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: repetitions_per_test_case
+                  type: INT
+                  defaultValueNumeric: 3
+                  constraints:
+                    nullable: false
+              - column:
+                  name: enabled_evaluator_keys
+                  type: JSONB
+                  constraints:
+                    nullable: false
+              - column:
+                  name: evaluator_configuration
+                  type: JSONB
+              - column:
+                  name: started_at
+                  type: TIMESTAMP WITH TIME ZONE
+              - column:
+                  name: completed_at
+                  type: TIMESTAMP WITH TIME ZONE
+              - column:
+                  name: created_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+              - column:
+                  name: failure_reason
+                  type: TEXT
+              - column:
+                  name: version
+                  type: BIGINT
+                  defaultValueNumeric: 0
+                  constraints:
+                    nullable: false
+  - changeSet:
+      id: 004-02-evaluation-run-foreign-keys
+      author: workbench
+      changes:
+        - addForeignKeyConstraint:
+            baseTableName: evaluation_run
+            baseColumnNames: target_system_id
+            constraintName: fk_run_target_system
+            referencedTableName: target_system
+            referencedColumnNames: id
+        - addForeignKeyConstraint:
+            baseTableName: evaluation_run
+            baseColumnNames: dataset_id
+            constraintName: fk_run_dataset
+            referencedTableName: evaluation_dataset
+            referencedColumnNames: id
+  - changeSet:
+      id: 004-03-evaluation-run-check-constraints
+      author: workbench
+      changes:
+        - sql:
+            sql: >-
+              ALTER TABLE evaluation_run
+              ADD CONSTRAINT chk_run_status
+              CHECK (status IN ('CREATED', 'QUEUED', 'RUNNING', 'PARTIALLY_COMPLETED', 'COMPLETED',
+                                 'FAILED', 'CANCELLED', 'INTERRUPTED'));
+        - sql:
+            sql: >-
+              ALTER TABLE evaluation_run
+              ADD CONSTRAINT chk_run_mode
+              CHECK (run_mode IN ('LIVE', 'REPLAY'));
+        - sql:
+            sql: >-
+              ALTER TABLE evaluation_run
+              ADD CONSTRAINT chk_run_repetitions_positive
+              CHECK (repetitions_per_test_case > 0);
+      rollback:
+        - sql:
+            sql: ALTER TABLE evaluation_run DROP CONSTRAINT chk_run_status;
+        - sql:
+            sql: ALTER TABLE evaluation_run DROP CONSTRAINT chk_run_mode;
+        - sql:
+            sql: ALTER TABLE evaluation_run DROP CONSTRAINT chk_run_repetitions_positive;
+  - changeSet:
+      id: 004-04-evaluation-run-index-status
+      author: workbench
+      changes:
+        - createIndex:
+            indexName: idx_run_status
+            tableName: evaluation_run
+            columns:
+              - column:
+                  name: status
+  - changeSet:
+      id: 004-05-evaluation-run-index-target-dataset
+      author: workbench
+      changes:
+        - createIndex:
+            indexName: idx_run_target_system_id
+            tableName: evaluation_run
+            columns:
+              - column:
+                  name: target_system_id
+        - createIndex:
+            indexName: idx_run_dataset_id
+            tableName: evaluation_run
+            columns:
+              - column:
+                  name: dataset_id

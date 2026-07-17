@@ -1,0 +1,88 @@
+databaseChangeLog:
+  - changeSet:
+      id: 007-01-create-human-review
+      author: workbench
+      changes:
+        - createTable:
+            tableName: human_review
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: metric_result_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: decision
+                  type: VARCHAR(30)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: reviewer_name
+                  type: VARCHAR(255)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: comment
+                  type: TEXT
+              - column:
+                  name: override_passed
+                  type: BOOLEAN
+              - column:
+                  name: override_score
+                  type: DOUBLE
+              - column:
+                  name: reviewed_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+  - changeSet:
+      id: 007-02-human-review-foreign-key
+      author: workbench
+      changes:
+        - addForeignKeyConstraint:
+            baseTableName: human_review
+            baseColumnNames: metric_result_id
+            constraintName: fk_human_review_metric_result
+            referencedTableName: evaluation_metric_result
+            referencedColumnNames: id
+            onDelete: CASCADE
+  - changeSet:
+      id: 007-03-human-review-check-constraints
+      author: workbench
+      changes:
+        - sql:
+            sql: >-
+              ALTER TABLE human_review
+              ADD CONSTRAINT chk_human_review_decision
+              CHECK (decision IN ('CONFIRMED', 'REJECTED', 'UNCERTAIN', 'NEEDS_DOMAIN_EXPERT'));
+        - sql:
+            sql: >-
+              ALTER TABLE human_review
+              ADD CONSTRAINT chk_human_review_override_score_range
+              CHECK (override_score IS NULL OR (override_score >= 0.0 AND override_score <= 1.0));
+      rollback:
+        - sql:
+            sql: ALTER TABLE human_review DROP CONSTRAINT chk_human_review_decision;
+        - sql:
+            sql: ALTER TABLE human_review DROP CONSTRAINT chk_human_review_override_score_range;
+  - changeSet:
+      id: 007-04-human-review-index-metric-result
+      author: workbench
+      changes:
+        - createIndex:
+            indexName: idx_human_review_metric_result_id
+            tableName: human_review
+            columns:
+              - column:
+                  name: metric_result_id
