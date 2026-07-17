@@ -86,6 +86,9 @@ public class TestExecution {
     @Column(name = "http_status")
     private Integer httpStatus;
 
+    @Column(name = "attempt_count")
+    private Integer attemptCount;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
@@ -104,6 +107,28 @@ public class TestExecution {
         this.createdAt = Instant.now();
     }
 
+    public void markRunning() {
+        this.status = ExecutionStatus.RUNNING;
+        this.startedAt = Instant.now();
+    }
+
+    /** A PENDING/RUNNING execution abandoned by cancellation or an interrupted process. */
+    public void markCancelled(String reason) {
+        this.status = ExecutionStatus.CANCELLED;
+        this.errorType = "CANCELLED";
+        this.errorMessage = reason;
+        this.completedAt = Instant.now();
+    }
+
+    /** Puts a CANCELLED execution back to PENDING so a resumed run can schedule it again. */
+    public void resetForResume() {
+        this.status = ExecutionStatus.PENDING;
+        this.errorType = null;
+        this.errorMessage = null;
+        this.startedAt = null;
+        this.completedAt = null;
+    }
+
     public void recordSuccess(
             JsonNode requestPayload,
             String answer,
@@ -114,7 +139,8 @@ public class TestExecution {
             long latencyMilliseconds,
             Integer inputTokens,
             Integer outputTokens,
-            int httpStatus,
+            Integer httpStatus,
+            Integer attemptCount,
             Instant startedAt,
             Instant completedAt) {
         this.status = ExecutionStatus.SUCCEEDED;
@@ -128,21 +154,28 @@ public class TestExecution {
         this.inputTokens = inputTokens;
         this.outputTokens = outputTokens;
         this.httpStatus = httpStatus;
+        this.attemptCount = attemptCount;
         this.startedAt = startedAt;
         this.completedAt = completedAt;
     }
 
     public void recordFailure(
             ExecutionStatus failureStatus,
+            JsonNode requestPayload,
+            JsonNode rawResponse,
             String errorType,
             String errorMessage,
             Integer httpStatus,
+            Integer attemptCount,
             Instant startedAt,
             Instant completedAt) {
         this.status = Objects.requireNonNull(failureStatus, "failureStatus must not be null");
+        this.requestPayload = requestPayload;
+        this.rawResponse = rawResponse;
         this.errorType = errorType;
         this.errorMessage = errorMessage;
         this.httpStatus = httpStatus;
+        this.attemptCount = attemptCount;
         this.startedAt = startedAt;
         this.completedAt = completedAt;
     }
@@ -225,6 +258,10 @@ public class TestExecution {
 
     public Integer getHttpStatus() {
         return httpStatus;
+    }
+
+    public Integer getAttemptCount() {
+        return attemptCount;
     }
 
     public Instant getCreatedAt() {

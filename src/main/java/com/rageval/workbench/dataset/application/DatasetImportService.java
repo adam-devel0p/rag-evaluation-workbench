@@ -1,5 +1,6 @@
 package com.rageval.workbench.dataset.application;
 
+import com.rageval.workbench.common.csv.CsvParser;
 import com.rageval.workbench.common.error.FieldViolation;
 import com.rageval.workbench.common.error.ValidationException;
 import com.rageval.workbench.dataset.api.dto.DatasetJsonImportRequest;
@@ -9,12 +10,7 @@ import com.rageval.workbench.dataset.domain.EvaluationTestCase;
 import com.rageval.workbench.dataset.domain.Severity;
 import com.rageval.workbench.dataset.infrastructure.EvaluationDatasetRepository;
 import com.rageval.workbench.dataset.infrastructure.EvaluationTestCaseRepository;
-import java.io.BufferedReader;
-import java.io.IOException;
 import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.io.UncheckedIOException;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -67,7 +63,7 @@ public class DatasetImportService {
 
     @Transactional
     public EvaluationDataset importCsv(String name, String description, String datasetVersion, InputStream csvContent) {
-        List<List<String>> rows = parseCsv(csvContent);
+        List<List<String>> rows = CsvParser.parse(csvContent);
         if (rows.isEmpty()) {
             throw new ValidationException(
                     "CSV file is empty", new FieldViolation("file", "must contain a header row and at least one data row"));
@@ -205,58 +201,5 @@ public class DatasetImportService {
 
     private String blankToNull(String value) {
         return (value == null || value.isBlank()) ? null : value;
-    }
-
-    /** Minimal RFC 4180 parser: quoted fields, embedded commas/newlines, and {@code ""} as an escaped quote. */
-    private List<List<String>> parseCsv(InputStream content) {
-        List<List<String>> rows = new ArrayList<>();
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(content, StandardCharsets.UTF_8))) {
-            List<String> currentRow = new ArrayList<>();
-            StringBuilder currentField = new StringBuilder();
-            boolean inQuotes = false;
-            int c;
-            boolean anyContent = false;
-            while ((c = reader.read()) != -1) {
-                char ch = (char) c;
-                anyContent = true;
-                if (inQuotes) {
-                    if (ch == '"') {
-                        reader.mark(1);
-                        int next = reader.read();
-                        if (next == '"') {
-                            currentField.append('"');
-                        } else {
-                            inQuotes = false;
-                            if (next != -1) {
-                                reader.reset();
-                            }
-                        }
-                    } else {
-                        currentField.append(ch);
-                    }
-                } else if (ch == '"') {
-                    inQuotes = true;
-                } else if (ch == ',') {
-                    currentRow.add(currentField.toString());
-                    currentField.setLength(0);
-                } else if (ch == '\n') {
-                    currentRow.add(currentField.toString());
-                    currentField.setLength(0);
-                    rows.add(currentRow);
-                    currentRow = new ArrayList<>();
-                } else if (ch == '\r') {
-                    // ignore; \n (or end of stream) terminates the row
-                } else {
-                    currentField.append(ch);
-                }
-            }
-            if (anyContent) {
-                currentRow.add(currentField.toString());
-                rows.add(currentRow);
-            }
-        } catch (IOException ex) {
-            throw new UncheckedIOException("Failed to read CSV content", ex);
-        }
-        return rows;
     }
 }

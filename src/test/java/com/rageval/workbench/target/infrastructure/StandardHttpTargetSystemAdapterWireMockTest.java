@@ -104,7 +104,8 @@ class StandardHttpTargetSystemAdapterWireMockTest {
     }
 
     private TargetInvocationRequest request() {
-        return new TargetInvocationRequest("tc-1", "Which Java version is required?", "conv-1", Map.of("role", "developer"));
+        return new TargetInvocationRequest(
+                null, "tc-1", "Which Java version is required?", "conv-1", Map.of("role", "developer"));
     }
 
     @Test

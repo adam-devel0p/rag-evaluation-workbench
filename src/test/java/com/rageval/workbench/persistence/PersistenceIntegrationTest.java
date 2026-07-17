@@ -230,6 +230,8 @@ class PersistenceIntegrationTest {
                 3,
                 List.of("transport", "required-facts"),
                 Map.of("latencyThresholdMs", 5000));
+        // Phase 3 guards the run state machine: RUNNING is only reachable via QUEUED.
+        run.markQueued();
         run.markStarted();
         runRepository.save(run);
 
@@ -249,6 +251,7 @@ class PersistenceIntegrationTest {
                 12,
                 5,
                 200,
+                1,
                 Instant.now(),
                 Instant.now());
         executionRepository.save(execution);

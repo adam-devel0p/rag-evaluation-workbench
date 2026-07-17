@@ -5,9 +5,9 @@ full requirements and `CLAUDE.md` for non-negotiable constraints.
 
 ## Current status
 
-**Last completed phase:** 2 — Dataset and target configuration
-**Next phase to run:** 3 — Run orchestration
-**Build state:** `./mvnw clean verify` green (60/60 tests), no local Ollama required (Testcontainers
+**Last completed phase:** 3 — Run orchestration
+**Next phase to run:** 4 — Deterministic evaluation
+**Build state:** `./mvnw clean verify` green (83/83 tests), no local Ollama required (Testcontainers
 starts its own Ollama and Postgres containers; Docker must be running for the Postgres-backed ITs).
 
 This header is the fast resume pointer — update it as the last step of every session. For the
@@ -79,18 +79,32 @@ as the first item in Phase 3's checklist below.
 
 ## Phase 3 — Run orchestration
 
-- [ ] Imported-trace adapter (JSON + CSV, spec §8.2) + `POST /api/v1/imported-traces`, moved here
-      from Phase 2 (see Phase 2 notes above) — needs `TestExecution`/repetition context to match a
-      trace to the right execution
-- [ ] Run state machine (CREATED → QUEUED → RUNNING → PARTIALLY_COMPLETED/COMPLETED/FAILED/
-      CANCELLED/INTERRUPTED)
-- [ ] Bounded task executor (configurable worker count, queue capacity, per-target concurrency;
-      no unbounded `CompletableFuture`, no common ForkJoinPool)
-- [ ] Live run execution creates pending `TestExecution` rows before invoking the target
-- [ ] Cancellation support
-- [ ] Startup recovery: mark stale RUNNING runs INTERRUPTED; resume endpoint for incomplete
-      executions only
-- [ ] Demo target under `demo` profile with all required scenarios (§27) + example dataset
+- [x] Imported-trace adapter (JSON + CSV, spec §8.2) + `POST /api/v1/imported-traces` (+ `/csv`
+      multipart variant), moved here from Phase 2 — implemented as a real `TargetSystemAdapter`
+      (`ImportedTraceTargetSystemAdapter` in the `run` module) resolving the stored trace by
+      execution id; import creates a REPLAY-mode run + one pending execution per trace, bound 1:1
+      to an `imported_trace` row (migration 011); row-level validation errors
+      (`traces[i].field`), all-or-nothing
+- [x] Run state machine (CREATED → QUEUED → RUNNING → PARTIALLY_COMPLETED/COMPLETED/FAILED/
+      CANCELLED/INTERRUPTED) — allowed-transition table enforced on the `EvaluationRun` entity
+      itself; every transition persisted via `RunStateService` (one short transaction per step,
+      no in-memory-only job state)
+- [x] Bounded task executor (`rag-evaluation.execution.*`: worker-count 2, queue-capacity 100;
+      AbortPolicy + compensating INTERRUPTED on rejection; per-target concurrency from
+      `TargetSystem.maximumConcurrency` via `TargetConcurrencyLimiter` semaphores; graceful
+      shutdown waits `shutdown-grace-seconds`; no `CompletableFuture`, no common ForkJoinPool)
+- [x] Live run execution creates pending `TestExecution` rows before invoking the target; persists
+      answer/citations/chunks/model/tokens/latency/HTTP status/error info + attempt count
+      (migration 010)
+- [x] Cancellation support (persisted CANCELLED immediately; a running worker observes it between
+      executions and cancels the remainder; in-flight invocation keeps its real result)
+- [x] Startup recovery: stale RUNNING **and** QUEUED runs → INTERRUPTED (queue is in-memory, so an
+      orphaned QUEUED run could never run again); stale RUNNING executions → CANCELLED; resume
+      endpoint re-schedules only PENDING/CANCELLED executions, never SUCCEEDED or
+      completed-with-error ones
+- [x] Demo target under `demo` profile with all 14 §27 scenarios (`POST /demo-target/chat`,
+      selected by external test-case ID DEMO-001..DEMO-014 with question-keyword fallback) +
+      `examples/demo-dataset.json`; non-demo context verified to answer 404 on that path
 
 ## Phase 4 — Deterministic evaluation
 

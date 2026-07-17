@@ -382,6 +382,126 @@ will extend this (Actuator integration, more exception types as new failure mode
 mechanism — and the `errors`/`correlationId` extension properties every `ProblemDetail` carries —
 is already in place and exercised by every controller integration test.
 
+## Phase 3 notes
+
+### Orchestration model: one worker task per run, not per execution
+
+The bounded executor (`rag-evaluation.execution.worker-count` = 2, `queue-capacity` = 100,
+`ThreadPoolTaskExecutor` with `AbortPolicy`) receives **one task per run**; the worker processes
+that run's executions sequentially. Rationale: spec §15 bounds *runs in flight*, repetition/
+consistency analysis (§17) benefits from executions of one run not racing each other, and
+cross-run parallelism against the same target is still governed by
+`TargetSystem.maximumConcurrency` via `TargetConcurrencyLimiter` (one fair semaphore per target
+id, permits sized on first use after startup — a changed `maximumConcurrency` applies from the
+next application start). No `CompletableFuture`, no common ForkJoinPool anywhere.
+
+### Every state change is its own short transaction (`RunStateService`)
+
+The worker never holds a JPA entity across steps: each step (`markRunning`,
+`createPendingExecutionsIfAbsent`, `markExecutionRunning`, `recordInvocationResult`,
+`finalizeRun`) reloads by id inside its own transaction. This is what makes "no in-memory-only
+job state" true — a crash between any two steps leaves a picture startup recovery can reason
+about — and it sidesteps `@Version` conflicts between the worker and the cancel endpoint (both
+always operate on a fresh load).
+
+### State machine enforced on the entity, not in services
+
+`EvaluationRun.transitionTo` checks an allowed-transition table and throws `ConflictException`
+otherwise, so an illegal transition cannot be persisted no matter which service attempts it.
+Notable edges: resumable states (INTERRUPTED/CANCELLED/FAILED/PARTIALLY_COMPLETED) → QUEUED
+(resume clears `completedAt`/`failureReason`; `startedAt` of the first start is preserved);
+QUEUED → INTERRUPTED doubles as the compensation when the executor queue rejects a submission
+(the run was accepted but never executed — client resumes later; API answers 409 with that hint).
+COMPLETED is terminal.
+
+### Cancellation is cooperative and immediate-by-status
+
+`POST /{id}/cancel` persists CANCELLED right away (any of CREATED/QUEUED/RUNNING). A worker
+observes the persisted status before each execution and cancels the remaining PENDING rows; an
+invocation already in flight completes and keeps its real result (deliberate: killing it would
+discard evidence about the target). A cancelled-while-QUEUED run is dropped by the worker at
+pickup (`markRunning` returns false when status ≠ QUEUED).
+
+### Resume semantics: incomplete ≠ failed
+
+Resume re-schedules only PENDING and CANCELLED executions (CANCELLED rows are reset to PENDING).
+TIMED_OUT / TARGET_ERROR / INVALID_RESPONSE executions are *completed* — they are evidence about
+the chatbot and are never silently re-run (re-running would overwrite the very instability the
+report should show). A resumable run with zero incomplete executions answers 409.
+
+### Startup recovery covers QUEUED too, deliberately beyond the spec's letter
+
+Spec §15 says "mark stale RUNNING runs INTERRUPTED". The executor queue is in-memory, so a run
+that was QUEUED when the process died is equally orphaned — it would stay QUEUED forever with no
+way to resume (start rejects non-CREATED). Recovery therefore marks both RUNNING and QUEUED runs
+INTERRUPTED and marks their stale RUNNING executions CANCELLED ("interrupted by application
+restart"), which resume then reschedules.
+
+### Terminal status derivation
+
+All executions SUCCEEDED → COMPLETED; at least one SUCCEEDED → PARTIALLY_COMPLETED (spec §15:
+"enough results exist to produce a report"); none → FAILED with a reason. The demo e2e test locks
+in the PARTIALLY_COMPLETED case (13 of 14 scenarios succeed, the HTTP-error scenario fails).
+
+### Imported traces are served through the adapter contract, not short-circuited
+
+`POST /api/v1/imported-traces` (JSON canonical, `/csv` for basic fields) validates row-level
+(unknown `externalTestCaseId` in the selected dataset, non-positive/duplicate repetition, blank
+question — reported together as `traces[i].field`), then creates a REPLAY-mode run in CREATED
+state, one pending execution per trace, and one `imported_trace` row (migration 011) bound 1:1 to
+its execution. Starting the run goes through the exact same orchestrator; the
+`ImportedTraceTargetSystemAdapter` (registered for `AdapterType.IMPORTED_TRACE`, discovered by the
+Phase 2 registry as planned) resolves the trace by execution id and returns it as a normal
+`TargetInvocationResult`. Consequences: cancellation/resume/Phase 4 evaluation treat imported
+runs identically to live ones, and the captured latency is reported as-is (for imported data the
+recorded latency *is* the measurement). The adapter lives in `run.infrastructure`, not `target`,
+because it reads run-owned data — dependency direction stays run → target.
+
+To make the repetition matching possible, `TargetInvocationRequest` gained an `executionId`
+component (nullable; the standard HTTP adapter ignores it, the connection test passes null).
+That is the one deliberate touch to passing Phase 2 code, plus extracting the private RFC 4180
+CSV parser out of `DatasetImportService` into `common.csv.CsvParser` so trace CSV import reuses
+it instead of a second hand-rolled copy.
+
+`RunMode.REPLAY` starts here conceptually: an imported-trace run evaluates captured interactions
+without any live call. Phase 7's replay-of-a-previous-run will additionally set
+`TestExecution.sourceExecutionId` (already in the schema since Phase 1).
+
+### Executions also persist `attempt_count` (migration 010)
+
+Spec §8.1 requires persisting at minimum the final attempt count and last error; Phase 2's
+adapter already reported `attemptCount` but Phase 1's schema had no column for it. Added as a
+nullable INT (executions cancelled before any invocation have none). `recordFailure` now also
+persists `requestPayload`/`rawResponse` so a failed execution keeps whatever evidence existed.
+
+### Demo target (§27) is a self-contained `demo` package under the `demo` profile
+
+`POST /demo-target/chat` (controller + `DemoTargetService`, both `@Profile("demo")`) implements
+all 14 deliberate scenarios keyed by external test-case ID `DEMO-001`..`DEMO-014` (question-keyword
+fallback), returning the normalized schema built from the canonical `Citation`/`RetrievedChunk`
+records plus an additive `usage` object so token-pointer extraction is exercised. The slow
+scenario's delay is `rag-evaluation.demo.slow-response-delay-millis` (default 3000);
+inconsistency across repetitions rotates three answers via an in-memory counter (acceptable
+in-memory state: demo-only, not job state). `examples/demo-dataset.json` covers every scenario
+with matching required facts/forbidden claims/expected documents. A new top-level `demo` package
+keeps the boundary obvious; it is absent outside the profile, and
+`RunControllerIntegrationTest.demoTargetEndpointIsAbsentOutsideDemoProfile` proves the path
+404s in the non-demo context.
+
+### Fixed while here: unknown paths no longer answer 500
+
+That 404 test exposed a Phase 2 bug: `GlobalExceptionHandler`'s `Exception` catch-all swallowed
+Spring's `NoResourceFoundException`, turning every unknown-URL request into a 500. Added an
+explicit `NoResourceFoundException` → 404 `ProblemDetail` handler.
+
+### API surface added this phase
+
+`POST/GET /api/v1/evaluation-runs`, `GET /{id}`, `POST /{id}/start|cancel|resume`,
+`GET /{id}/executions` (paged; response DTO deliberately omits `requestPayload`/`rawResponse` —
+client content stays out of list payloads per the privacy defaults), `POST /api/v1/imported-traces`
+(+`/csv`). Create/start/resume answer 202 with the current persisted run state; §21's
+`/metrics`, `/findings`, `/summary`, `/replay` arrive with Phases 4–7.
+
 ## Later phases
 
 To be filled in as Phases 3–8 land (orchestration model, evaluator wrapping decisions actually
@@ -539,3 +659,68 @@ lost context — read both before starting work.
   `TargetSystemConfigurationFactory` (both already built) into per-execution invocations, startup
   recovery for stale `RUNNING` runs, and the `demo` profile target + example dataset exercising
   every §27 scenario.
+
+### Session 3 — 2026-07-17 — Phase 3: Run orchestration + demo target
+
+- Reconciled first: re-ran `./mvnw clean verify` before starting (Docker confirmed running) —
+  matched Session 2's log exactly (BUILD SUCCESS, 60/60 tests), so no reconciliation was needed.
+- **Run state machine:** allowed-transition table enforced on `EvaluationRun` itself
+  (`transitionTo` throws `ConflictException` on any illegal edge), covering all eight spec §6.4
+  statuses. Resume edges (INTERRUPTED/CANCELLED/FAILED/PARTIALLY_COMPLETED → QUEUED) clear the
+  previous outcome; QUEUED → INTERRUPTED doubles as the compensation for executor-queue rejection.
+  Phase 1's `PersistenceIntegrationTest` needed a one-line touch (`markQueued()` before
+  `markStarted()`) because CREATED → RUNNING is now correctly illegal — stated here per the
+  working agreement.
+- **Bounded executor + worker model:** `ThreadPoolTaskExecutor` (worker-count 2, queue-capacity
+  100, AbortPolicy, graceful shutdown with 30s grace), one task per run, executions processed
+  sequentially by that run's worker; per-target concurrency enforced across runs by
+  `TargetConcurrencyLimiter` semaphores sized from `TargetSystem.maximumConcurrency`. Defaults per
+  spec §25. See "Phase 3 notes" for why per-run (not per-execution) tasking was chosen.
+- **No in-memory-only job state:** every status change is one short transaction in
+  `RunStateService`, always reloading by id — crash-consistent at any point, and no `@Version`
+  contention between worker and cancel endpoint.
+- **Cancellation** persists CANCELLED immediately; a running worker observes it between executions
+  and cancels remaining PENDING rows (in-flight invocations keep their real result). **Resume**
+  re-schedules only PENDING/CANCELLED executions — completed-with-error executions are evidence
+  and are never repeated; nothing-to-resume answers 409. **Startup recovery** marks stale RUNNING
+  *and* QUEUED runs INTERRUPTED (queue is in-memory; an orphaned QUEUED run could never run
+  again — deliberate extension of §15's letter, documented in Phase 3 notes) and stale RUNNING
+  executions CANCELLED.
+- **Imported traces (spec §8.2):** `POST /api/v1/imported-traces` (JSON canonical) + `/csv`
+  (basic fields), all-or-nothing with row-level `traces[i].field` violations (unknown external
+  test-case id in the selected dataset, non-positive/duplicate repetition, blank question).
+  Creates a REPLAY-mode run + one pending execution per trace + one `imported_trace` row bound
+  1:1 (migration 011); the run then starts/cancels/resumes through the normal orchestrator, with
+  `ImportedTraceTargetSystemAdapter` (in `run.infrastructure`, plugged into Phase 2's registry as
+  planned) serving stored data by execution id. `TargetInvocationRequest` gained a nullable
+  `executionId` component for that lookup (deliberate Phase 2 touch, standard adapter ignores it);
+  the RFC 4180 parser moved from `DatasetImportService` to `common.csv.CsvParser` for reuse.
+- **Schema:** migration 010 adds `test_execution.attempt_count` (spec §8.1 — adapter reported it
+  since Phase 2 but no column existed); `recordFailure` now persists request payload/raw response
+  too. Migration 011 adds `imported_trace`.
+- **Demo target (§27):** self-contained `demo` package, `@Profile("demo")`, all 14 scenarios
+  keyed DEMO-001..DEMO-014 with question fallback, normalized schema + additive `usage` tokens;
+  slow-scenario delay configurable (`rag-evaluation.demo.slow-response-delay-millis`).
+  `examples/demo-dataset.json` exercises every scenario. Absence outside the profile is asserted
+  by an integration test — which exposed and fixed a Phase 2 bug: the `Exception` catch-all in
+  `GlobalExceptionHandler` turned unknown-URL 404s into 500s (`NoResourceFoundException` handler
+  added).
+- **Tests:** 83/83 green via `./mvnw clean verify`, Docker running, no local Ollama. New:
+  `EvaluationRunStateMachineTest` (8 unit), `RunControllerIntegrationTest` (8 IT: full lifecycle
+  with normalized persistence, partial failure → PARTIALLY_COMPLETED, validation, cancel +
+  illegal-transition rejection, resume-never-repeats-success with WireMock request verification,
+  nothing-to-resume 409, startup recovery, demo-endpoint absence),
+  `ImportedTraceControllerIntegrationTest` (5 IT: JSON import→start→COMPLETED with trace data
+  round-trip, row-level violations persist nothing, wrong adapter type, CSV happy path with
+  quoted fields, CSV header/number errors), `DemoTargetIntegrationTest` (2 IT on a real random
+  port, demo profile: full vertical slice — API-imported example dataset, real HTTP target at
+  `/demo-target/chat`, run through the real orchestrator, per-scenario assertions incl. token
+  extraction and TARGET_ERROR on the HTTP-500 scenario; answer rotation for the inconsistency
+  scenario).
+- `git status` after the run: only the expected new/modified files, nothing stray.
+- **Next step:** Phase 4 — deterministic evaluation. Define the `EvaluationStrategy` interface
+  (spec §10, independent of Spring AI), implement the nine deterministic evaluators (§11) against
+  persisted `TestExecution` data, hook them into the run pipeline after target invocation
+  (`RunWorker` currently finalizes right after invocation — evaluation slots in between),
+  aggregation with error-excluding denominators (§18), evidence-based failure classification
+  (§16), and the Phase 4 checkpoint: a useful report with zero Ollama dependency.

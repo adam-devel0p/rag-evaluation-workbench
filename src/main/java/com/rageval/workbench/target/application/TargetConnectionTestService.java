@@ -57,6 +57,7 @@ public class TargetConnectionTestService {
 
         TestConnectionRequest effectiveRequest = request != null ? request : new TestConnectionRequest(null, null, null);
         TargetInvocationRequest invocationRequest = new TargetInvocationRequest(
+                null,
                 "connection-test",
                 effectiveRequest.effectiveSampleQuestion(),
                 effectiveRequest.conversationId(),

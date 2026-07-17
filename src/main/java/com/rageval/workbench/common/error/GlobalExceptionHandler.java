@@ -11,6 +11,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /**
  * Centralized RFC 9457 {@link ProblemDetail} exception mapping. Every response carries the
@@ -78,6 +79,19 @@ public class GlobalExceptionHandler {
     public ProblemDetail handleConflict(ConflictException ex, HttpServletRequest request) {
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
         problem.setTitle("Conflict");
+        return withCorrelationId(problem, request);
+    }
+
+    /**
+     * A request to a URL no handler serves must stay a plain 404 — without this, the
+     * {@code Exception} catch-all below would turn it into a misleading 500. Found in Phase 3 by
+     * the test asserting the demo-target endpoint is absent outside the {@code demo} profile.
+     */
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ProblemDetail handleNoResource(NoResourceFoundException ex, HttpServletRequest request) {
+        ProblemDetail problem =
+                ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, "No endpoint at this path");
+        problem.setTitle("Not found");
         return withCorrelationId(problem, request);
     }
 

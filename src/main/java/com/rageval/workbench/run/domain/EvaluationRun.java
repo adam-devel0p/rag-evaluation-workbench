@@ -1,5 +1,6 @@
 package com.rageval.workbench.run.domain;
 
+import com.rageval.workbench.common.error.ConflictException;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -11,14 +12,16 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
 /**
  * One evaluation execution against a {@code TargetSystem} using an {@code EvaluationDataset}.
- * Owns the {@link ExecutionStatus} state machine transitions enforced by the orchestration layer
- * (Phase 3).
+ * Owns its {@link RunStatus} state machine: every transition goes through {@link #transitionTo},
+ * which rejects anything not in the allowed-transition table, so an illegal transition can never
+ * be persisted regardless of which service attempts it.
  */
 @Entity
 @Table(name = "evaluation_run")
@@ -95,24 +98,75 @@ public class EvaluationRun {
         this.createdAt = Instant.now();
     }
 
+    private static final Map<RunStatus, Set<RunStatus>> ALLOWED_TRANSITIONS = Map.of(
+            RunStatus.CREATED, Set.of(RunStatus.QUEUED, RunStatus.CANCELLED),
+            RunStatus.QUEUED, Set.of(RunStatus.RUNNING, RunStatus.CANCELLED, RunStatus.INTERRUPTED),
+            RunStatus.RUNNING,
+                    Set.of(
+                            RunStatus.COMPLETED,
+                            RunStatus.PARTIALLY_COMPLETED,
+                            RunStatus.FAILED,
+                            RunStatus.CANCELLED,
+                            RunStatus.INTERRUPTED),
+            RunStatus.PARTIALLY_COMPLETED, Set.of(RunStatus.QUEUED),
+            RunStatus.FAILED, Set.of(RunStatus.QUEUED),
+            RunStatus.CANCELLED, Set.of(RunStatus.QUEUED),
+            RunStatus.INTERRUPTED, Set.of(RunStatus.QUEUED),
+            RunStatus.COMPLETED, Set.of());
+
     public void transitionTo(RunStatus newStatus) {
-        this.status = Objects.requireNonNull(newStatus, "newStatus must not be null");
+        Objects.requireNonNull(newStatus, "newStatus must not be null");
+        if (!ALLOWED_TRANSITIONS.get(status).contains(newStatus)) {
+            throw new ConflictException(
+                    "Run " + id + " cannot transition from " + status + " to " + newStatus);
+        }
+        this.status = newStatus;
+    }
+
+    /** CREATED → QUEUED on first start; also re-queues a resumable run, clearing its previous outcome. */
+    public void markQueued() {
+        transitionTo(RunStatus.QUEUED);
+        this.completedAt = null;
+        this.failureReason = null;
     }
 
     public void markStarted() {
-        this.status = RunStatus.RUNNING;
-        this.startedAt = Instant.now();
+        transitionTo(RunStatus.RUNNING);
+        if (this.startedAt == null) {
+            this.startedAt = Instant.now();
+        }
     }
 
     public void markCompleted(RunStatus terminalStatus) {
-        this.status = Objects.requireNonNull(terminalStatus, "terminalStatus must not be null");
+        if (terminalStatus != RunStatus.COMPLETED && terminalStatus != RunStatus.PARTIALLY_COMPLETED) {
+            throw new IllegalArgumentException(
+                    "markCompleted only accepts COMPLETED or PARTIALLY_COMPLETED, got " + terminalStatus);
+        }
+        transitionTo(terminalStatus);
         this.completedAt = Instant.now();
     }
 
     public void markFailed(String reason) {
-        this.status = RunStatus.FAILED;
+        transitionTo(RunStatus.FAILED);
         this.failureReason = reason;
         this.completedAt = Instant.now();
+    }
+
+    public void markCancelled() {
+        transitionTo(RunStatus.CANCELLED);
+        this.completedAt = Instant.now();
+    }
+
+    /** Startup recovery for runs left QUEUED/RUNNING by a dead process; deliberately keeps {@code completedAt} null. */
+    public void markInterrupted() {
+        transitionTo(RunStatus.INTERRUPTED);
+    }
+
+    public boolean isResumable() {
+        return status == RunStatus.PARTIALLY_COMPLETED
+                || status == RunStatus.FAILED
+                || status == RunStatus.CANCELLED
+                || status == RunStatus.INTERRUPTED;
     }
 
     public UUID getId() {

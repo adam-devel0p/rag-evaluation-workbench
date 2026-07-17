@@ -1,0 +1,90 @@
+databaseChangeLog:
+  - changeSet:
+      id: 011-01-create-imported-trace
+      author: workbench
+      comment: >-
+        A previously captured chatbot interaction imported via POST /api/v1/imported-traces
+        (spec 8.2). Each trace is bound 1:1 to the pending TestExecution created for it at import
+        time; the IMPORTED_TRACE adapter resolves the trace by execution id when the run executes.
+      changes:
+        - createTable:
+            tableName: imported_trace
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: test_execution_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    unique: true
+                    uniqueConstraintName: uq_imported_trace_execution
+              - column:
+                  name: external_test_case_id
+                  type: VARCHAR(255)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: repetition_number
+                  type: INT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: question
+                  type: TEXT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: answer
+                  type: TEXT
+              - column:
+                  name: citations
+                  type: JSONB
+                  constraints:
+                    nullable: false
+              - column:
+                  name: retrieved_chunks
+                  type: JSONB
+                  constraints:
+                    nullable: false
+              - column:
+                  name: target_model
+                  type: VARCHAR(255)
+              - column:
+                  name: latency_milliseconds
+                  type: BIGINT
+              - column:
+                  name: metadata
+                  type: JSONB
+              - column:
+                  name: created_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+  - changeSet:
+      id: 011-02-imported-trace-foreign-keys
+      author: workbench
+      changes:
+        - addForeignKeyConstraint:
+            baseTableName: imported_trace
+            baseColumnNames: test_execution_id
+            constraintName: fk_imported_trace_execution
+            referencedTableName: test_execution
+            referencedColumnNames: id
+            onDelete: CASCADE
+  - changeSet:
+      id: 011-03-imported-trace-check-constraints
+      author: workbench
+      changes:
+        - sql:
+            sql: >-
+              ALTER TABLE imported_trace
+              ADD CONSTRAINT chk_imported_trace_repetition_positive
+              CHECK (repetition_number > 0);
+      rollback:
+        - sql:
+            sql: ALTER TABLE imported_trace DROP CONSTRAINT chk_imported_trace_repetition_positive;
