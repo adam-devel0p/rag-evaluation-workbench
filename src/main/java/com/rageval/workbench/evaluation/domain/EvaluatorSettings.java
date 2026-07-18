@@ -12,6 +12,12 @@ import java.util.Objects;
  * <p>{@code maximumAcceptableLatencyMilliseconds} at zero or below disables the latency check.
  * {@code citationPolicyByTag} is consulted in the test case's own tag order; the first tag with a
  * mapping wins, falling back to {@code citationPolicy}.
+ *
+ * <p>{@code maximumContextCharacters} caps the retrieved context passed to an LLM evaluator
+ * (spec §12); truncation is never silent — evaluators record it in evidence metadata and flag the
+ * result for human review. {@code referenceCorrectnessUsesRetrievedContext} is the explicit
+ * opt-in spec §13.3 requires before retrieved context may be shown to the reference-correctness
+ * judge; by default the reference answer and expected facts are the only authority.
  */
 public record EvaluatorSettings(
         long maximumAcceptableLatencyMilliseconds,
@@ -22,7 +28,9 @@ public record EvaluatorSettings(
         int refusalAnswerTailCharacters,
         double humanReviewConfidenceThreshold,
         List<String> mandatoryEvaluatorKeys,
-        List<String> humanReviewTags) {
+        List<String> humanReviewTags,
+        int maximumContextCharacters,
+        boolean referenceCorrectnessUsesRetrievedContext) {
 
     public EvaluatorSettings {
         Objects.requireNonNull(citationPolicy, "citationPolicy must not be null");

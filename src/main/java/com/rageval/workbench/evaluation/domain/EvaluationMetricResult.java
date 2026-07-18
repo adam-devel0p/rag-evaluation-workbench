@@ -111,6 +111,19 @@ public class EvaluationMetricResult {
         this.createdAt = Instant.now();
     }
 
+    /**
+     * Flags this result for human review after the fact — used by the spec §14 cross-evaluator
+     * disagreement triggers, which only become computable once every evaluator's verdict for the
+     * execution exists. The reason is appended to the explanation so the flag is never silent.
+     */
+    public void flagForHumanReview(String reason) {
+        this.requiresHumanReview = true;
+        if (reason != null && !reason.isBlank()) {
+            this.explanation = (this.explanation != null ? this.explanation + " " : "")
+                    + "[human review: " + reason + "]";
+        }
+    }
+
     public UUID getId() {
         return id;
     }

@@ -39,7 +39,9 @@ public final class EvaluationFixtures {
                 160,
                 0.70,
                 List.of("transport", "required-facts", "forbidden-claims"),
-                List.of("security", "permission"));
+                List.of("security", "permission"),
+                30000,
+                false);
     }
 
     public static EvaluationRun run() {

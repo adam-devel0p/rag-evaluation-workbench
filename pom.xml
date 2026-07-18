@@ -153,4 +153,34 @@
 		</plugins>
 	</build>
 
+	<profiles>
+		<!-- Real-Ollama tests (*OllamaIT) live behind this opt-in profile only: the default
+		     `./mvnw clean verify` must pass with no Ollama running and never touch a real model.
+		     Requires Ollama at OLLAMA_BASE_URL with OLLAMA_EVALUATOR_MODEL pulled. -->
+		<profile>
+			<id>ollama-it</id>
+			<build>
+				<plugins>
+					<plugin>
+						<groupId>org.apache.maven.plugins</groupId>
+						<artifactId>maven-failsafe-plugin</artifactId>
+						<configuration>
+							<includes>
+								<include>**/*OllamaIT.java</include>
+							</includes>
+						</configuration>
+						<executions>
+							<execution>
+								<goals>
+									<goal>integration-test</goal>
+									<goal>verify</goal>
+								</goals>
+							</execution>
+						</executions>
+					</plugin>
+				</plugins>
+			</build>
+		</profile>
+	</profiles>
+
 </project>

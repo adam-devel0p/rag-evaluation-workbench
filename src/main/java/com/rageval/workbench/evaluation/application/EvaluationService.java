@@ -10,7 +10,6 @@ import com.rageval.workbench.evaluation.domain.EvaluationMetricResult;
 import com.rageval.workbench.evaluation.domain.EvaluationResult;
 import com.rageval.workbench.evaluation.domain.EvaluationStrategy;
 import com.rageval.workbench.evaluation.domain.EvaluatorSettings;
-import com.rageval.workbench.evaluation.domain.EvaluatorType;
 import com.rageval.workbench.evaluation.domain.MetricResultStatus;
 import com.rageval.workbench.evaluation.infrastructure.EvaluationMetricResultRepository;
 import com.rageval.workbench.run.domain.EvaluationRun;
@@ -58,6 +57,7 @@ public class EvaluationService {
 
     private final List<EvaluationStrategy> strategies;
     private final EvaluatorSettingsFactory settingsFactory;
+    private final CrossEvaluatorReviewTriggers crossEvaluatorReviewTriggers;
     private final EvaluationMetricResultRepository metricResultRepository;
     private final EvaluationRunRepository runRepository;
     private final TestExecutionRepository executionRepository;
@@ -66,6 +66,7 @@ public class EvaluationService {
     public EvaluationService(
             List<EvaluationStrategy> strategies,
             EvaluatorSettingsFactory settingsFactory,
+            CrossEvaluatorReviewTriggers crossEvaluatorReviewTriggers,
             EvaluationMetricResultRepository metricResultRepository,
             EvaluationRunRepository runRepository,
             TestExecutionRepository executionRepository,
@@ -74,6 +75,7 @@ public class EvaluationService {
                 .sorted(Comparator.comparing(EvaluationStrategy::key))
                 .toList();
         this.settingsFactory = settingsFactory;
+        this.crossEvaluatorReviewTriggers = crossEvaluatorReviewTriggers;
         this.metricResultRepository = metricResultRepository;
         this.runRepository = runRepository;
         this.executionRepository = executionRepository;
@@ -109,15 +111,20 @@ public class EvaluationService {
                 .orElseThrow(() -> new NotFoundException("Test case not found: " + execution.getTestCaseId()));
 
         EvaluatorSettings settings = settingsFactory.resolve(run);
+        List<EvaluationMetricResult> allResults = new ArrayList<>();
         List<EvaluationMetricResult> completed = new ArrayList<>();
         for (EvaluationStrategy strategy : enabledStrategies(run)) {
             EvaluationMetricResult result =
                     runOne(strategy, new EvaluationContext(run, testCase, execution, settings, completed));
-            metricResultRepository.save(result);
+            allResults.add(result);
             if (result.getStatus() == MetricResultStatus.COMPLETED) {
                 completed.add(result);
             }
         }
+        // The spec §14 cross-evaluator disagreement triggers need every verdict for the execution,
+        // so they run after the loop and before anything is persisted.
+        crossEvaluatorReviewTriggers.apply(allResults);
+        metricResultRepository.saveAll(allResults);
     }
 
     /**
@@ -161,10 +168,10 @@ public class EvaluationService {
                 return new EvaluationMetricResult(
                         context.execution().getId(),
                         strategy.key(),
-                        EvaluatorType.DETERMINISTIC,
+                        strategy.evaluatorType(),
                         strategy.version(),
-                        null,
-                        null,
+                        strategy.evaluatorModel(),
+                        strategy.promptVersion(),
                         MetricResultStatus.SKIPPED,
                         null,
                         null,
@@ -186,10 +193,10 @@ public class EvaluationService {
             return new EvaluationMetricResult(
                     context.execution().getId(),
                     strategy.key(),
-                    EvaluatorType.DETERMINISTIC,
+                    strategy.evaluatorType(),
                     strategy.version(),
-                    null,
-                    null,
+                    strategy.evaluatorModel(),
+                    strategy.promptVersion(),
                     MetricResultStatus.COMPLETED,
                     result.passed(),
                     result.score(),
@@ -210,17 +217,19 @@ public class EvaluationService {
             return new EvaluationMetricResult(
                     context.execution().getId(),
                     strategy.key(),
-                    EvaluatorType.DETERMINISTIC,
+                    strategy.evaluatorType(),
                     strategy.version(),
-                    null,
-                    null,
+                    strategy.evaluatorModel(),
+                    strategy.promptVersion(),
                     MetricResultStatus.FAILED,
                     null,
                     null,
                     null,
                     "The evaluator itself failed; this says nothing about the chatbot's answer",
                     List.of(),
-                    false,
+                    // Spec §14: malformed/incomplete evaluator output is a human-review trigger —
+                    // a missing automated verdict must be visible to a reviewer, not just absent.
+                    true,
                     elapsedMillis(start),
                     ex.toString());
         }

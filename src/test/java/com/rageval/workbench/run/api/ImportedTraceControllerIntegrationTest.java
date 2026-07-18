@@ -37,7 +37,7 @@ import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.web.servlet.MockMvc;
 import tools.jackson.databind.json.JsonMapper;
 
-@SpringBootTest
+@SpringBootTest(properties = "spring.ai.ollama.base-url=http://localhost:1")
 @AutoConfigureMockMvc
 @Import(PostgresTestcontainersConfiguration.class)
 class ImportedTraceControllerIntegrationTest {

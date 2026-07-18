@@ -86,7 +86,10 @@ class EvaluationServiceTest {
                         List.of("i cannot"),
                         List.of("i don't know"),
                         160,
-                        List.of("security"))),
+                        List.of("security"),
+                        30000,
+                        false)),
+                new CrossEvaluatorReviewTriggers(),
                 metricResultRepository,
                 runRepository,
                 executionRepository,
@@ -102,10 +105,10 @@ class EvaluationServiceTest {
         when(runRepository.findById(any())).thenReturn(Optional.of(run));
         when(testCaseRepository.findById(any())).thenReturn(Optional.of(testCase));
         when(metricResultRepository.findByTestExecutionId(execution.getId())).thenReturn(List.of());
-        when(metricResultRepository.save(any())).thenAnswer(invocation -> {
-            EvaluationMetricResult result = invocation.getArgument(0);
-            saved.add(result);
-            return result;
+        when(metricResultRepository.saveAll(any())).thenAnswer(invocation -> {
+            Iterable<EvaluationMetricResult> results = invocation.getArgument(0);
+            results.forEach(saved::add);
+            return results;
         });
     }
 
@@ -122,6 +125,8 @@ class EvaluationServiceTest {
         assertThat(crashed.getPassed()).isNull();
         assertThat(crashed.getErrorMessage()).contains("deliberate evaluator crash");
         assertThat(crashed.getExplanation()).contains("says nothing about the chatbot");
+        // Spec §14: a missing automated verdict (evaluator failure) must reach a human reviewer.
+        assertThat(crashed.isRequiresHumanReview()).isTrue();
 
         EvaluationMetricResult facts = saved.stream()
                 .filter(result -> result.getEvaluatorKey().equals(RequiredFactsEvaluator.KEY))

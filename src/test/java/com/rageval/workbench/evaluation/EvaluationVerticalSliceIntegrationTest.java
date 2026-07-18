@@ -47,8 +47,18 @@ import tools.jackson.databind.node.ObjectNode;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("demo")
 @Import(PostgresTestcontainersConfiguration.class)
-@TestPropertySource(properties = "rag-evaluation.demo.slow-response-delay-millis=2500")
+// The unreachable Ollama base URL keeps this test deterministic on machines that happen to run a
+// real local Ollama; the run below enables only the deterministic evaluators, since this test is
+// the Phase 4 zero-Ollama checkpoint (Phase 5's LLM path has its own integration tests).
+@TestPropertySource(properties = {
+    "rag-evaluation.demo.slow-response-delay-millis=2500",
+    "spring.ai.ollama.base-url=http://localhost:1"
+})
 class EvaluationVerticalSliceIntegrationTest {
+
+    private static final List<String> DETERMINISTIC_EVALUATOR_KEYS = List.of(
+            "transport", "latency", "required-facts", "forbidden-claims", "refusal", "citation-presence",
+            "expected-documents", "citation-retrieval-consistency", "answerability");
 
     @LocalServerPort
     private int port;
@@ -104,6 +114,10 @@ class EvaluationVerticalSliceIntegrationTest {
         runRequest.put("name", "Phase 4 vertical slice");
         runRequest.put("repetitionsPerTestCase", 2);
         runRequest.set("evaluatorConfiguration", evaluatorConfiguration);
+        // Deterministic evaluators only: this test is the Phase 4 zero-Ollama checkpoint and its
+        // exact metric/outcome expectations below must stay independent of the Phase 5 LLM path.
+        var enabledKeys = runRequest.putArray("enabledEvaluatorKeys");
+        DETERMINISTIC_EVALUATOR_KEYS.forEach(enabledKeys::add);
         JsonNode created = client.post().uri("/api/v1/evaluation-runs")
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(jsonMapper.writeValueAsString(runRequest))

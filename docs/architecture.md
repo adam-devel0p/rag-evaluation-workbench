@@ -624,6 +624,130 @@ results), so replay/resume never double-evaluates. Evaluation and classification
 logged and swallowed in the pipeline: they must never demote a run that successfully collected
 target evidence.
 
+## Phase 5 notes
+
+### Judge abstraction: one interface, an Ollama implementation, a deterministic fake
+
+All eight LLM evaluators speak `evaluation.llm.JudgeClient` — `judge(JudgeRequest, Class<T>)`
+returning a schema-mapped record plus model name and duration. The production implementation
+(`evaluation.infrastructure.OllamaJudgeClient`) is the *single* code path that sends content to a
+model; the normal test suite injects `FakeJudgeClient` (test sources), a scriptable deterministic
+fake that also records every request so prompt-hardening tests can assert on exactly what would be
+sent. Real-model tests (`*OllamaIT`) run only behind the `-Pollama-it` profile (failsafe include;
+surefire's default name patterns never pick them up), so the default `./mvnw clean verify` never
+touches a real model.
+
+### Spring AI 2.0.0 surface actually used (verified via `javap`, extending the Phase 0 findings)
+
+- `OllamaOptions` no longer exists — Spring AI 2.0 renamed it **`OllamaChatOptions`** with a
+  self-typed builder hierarchy (`model(String)`/`temperature(Double)` live on parent builder
+  classes; call them as statements, not a fluent chain, to dodge the erased self-type).
+- `ChatClient`'s request spec takes an options **builder** (`options(B extends
+  ChatOptions.Builder<?>)`), not built options.
+- `BeanOutputConverter` is Jackson 3-based (`tools.jackson...JsonMapper`) and exposes
+  `getJsonSchemaMap()` — passed as Ollama's native structured-output `format`, so the schema is
+  enforced server-side *and* re-parsed client-side (`convert`); a mismatch throws and becomes
+  `JudgeMalformedOutputException`.
+- Messages are passed as explicit `SystemMessage`/`UserMessage` objects, never through the
+  ChatClient text-template path — untrusted content can't be misinterpreted as a prompt template.
+- Spring Boot 4 relocated the health API: `org.springframework.boot.health.contributor.*` (used
+  by `EvaluatorModelHealthIndicator`), not the Boot 3 `actuate.health` package.
+
+### Custom structured evaluators; Spring AI's built-in evaluators are not wrapped
+
+Confirmed the Phase 0 decision against the resolved jars: `FactCheckingEvaluator` and
+`RelevancyEvaluator` still answer with a single pass/score/feedback-string tuple. That cannot
+carry per-claim verdicts with supporting/contradicting chunk IDs (groundedness), per-chunk
+decisions (context relevance), or our untrusted-content prompt hardening — their prompt templates
+are their own. Wrapping them would have meant a second Ollama call per metric for evidence we
+already produce better ourselves, so **all eight evaluators are fully custom** structured-output
+evaluators on `JudgeClient`. This is the spec's own hedge ("do not force it into the
+architecture"), exercised.
+
+### Derived verdicts: the judge supplies evidence, Java computes the score
+
+Where the spec defines objective aggregation, it is computed deterministically from the judge's
+per-item decisions rather than trusted from the model: groundedness pass/fail (no CONTRADICTED /
+NOT_IN_CONTEXT claim) and score (supported fraction, partial support at half weight), and context
+relevance's relevant/retrieved ratio, relevant-in-top-3, and irrelevant-top-ranked (from persisted
+chunk ranks). "No score without evidence" thus holds even against a sloppy judge; the judge's own
+numbers are still persisted in the raw judge-output evidence. A groundedness call that returns
+zero claim decisions is a vacuous pass flagged for human review — never a manufactured chatbot
+failure.
+
+### Semantic refusal runs on every successful answer
+
+`INCORRECT_REFUSAL` (refusing an ordinary answerable question) is only observable on cases where
+no refusal was expected, so the evaluator is applicable to every successful answer, and the
+pass/fail mapping depends on `shouldRefuse`/`answerable` (unanswerable cases accept both honest
+uncertainty and refusal). Phrase-based `refusal` (Phase 4) still runs only on `shouldRefuse`
+cases; where both exist and disagree, both results are flagged for review.
+
+### Spec §14 triggers: local ones in evaluators, cross-evaluator ones after the loop
+
+Truncated context, contradictory documents (CONTEXT_VS_CONTEXT pairs), missing reference answer
+(reference-correctness/completeness judging on required facts alone), and
+partial-refusal-with-disclosure are flagged by the evaluator that observes them. Low confidence,
+HIGH/CRITICAL severity, and security/permission tags stay in `EvaluationService`'s central check
+(Phase 4). The two triggers that need *all* verdicts — deterministic/LLM disagreement and two LLM
+evaluators disagreeing — run in `CrossEvaluatorReviewTriggers` after the evaluator loop, over
+explicit same-aspect pairs only (refusal↔semantic-refusal, required-facts↔reference-correctness,
+required-facts↔completeness, groundedness↔ANSWER_VS_CONTEXT contradiction,
+reference-correctness↔ANSWER_VS_REFERENCE contradiction). A blanket any-two-metrics-differ rule
+was deliberately rejected: relevant-but-ungrounded is a legitimate combination, not a
+disagreement. This required `EvaluationService` to collect results and `saveAll` at the end
+instead of saving per strategy (stated Phase 4 touch), and gave `EvaluationMetricResult` a
+`flagForHumanReview(reason)` mutator that appends the reason to the explanation — flags are never
+silent. Evaluator failures (`FAILED`) now always set `requiresHumanReview` (spec §14's
+malformed-output trigger): a missing automated verdict must reach a reviewer.
+
+### Evaluator identity on the strategy interface, not a parallel registry
+
+`EvaluationStrategy` gained default methods `evaluatorType()` / `promptVersion()` /
+`evaluatorModel()` (deterministic defaults: DETERMINISTIC / null / null), so `EvaluationService`
+persists LLM metadata without touching the nine Phase 4 evaluators. The judge model name comes
+from the injected `JudgeClient`, meaning a replayed run's results always carry the model that
+actually judged them.
+
+### Graceful degradation is classification, not availability checking
+
+Nothing pings Ollama before evaluating: the judge call simply fails and `OllamaJudgeClient`
+classifies the failure (connect/host/timeout errors and model-404 → `JudgeUnavailableException`,
+unparseable output → `JudgeMalformedOutputException`), which `EvaluationService`'s existing
+catch-all records as metric-status FAILED — never a chatbot failure, and outcomes/denominators
+already exclude it (Phase 4 rules). Client-side retry is disabled
+(`spring.ai.retry.max-attempts=0` — verified via bytecode that Spring AI feeds this value to
+`RetryPolicy.maxRetries`, so `1` would still mean one retry with a 2 s default backoff, and that
+`ResourceAccessException`/connect-refused IS in the retryable set): with 8 judge calls per
+execution, default retry backoff turned a dead Ollama into minutes of stalled run time — exactly
+the failure mode the first full-verify run caught (6 pre-existing run ITs timing out).
+`EvaluatorModelHealthIndicator` (component `evaluatorModel`) reports DOWN with the
+reason (unreachable vs. model-not-pulled) via `OllamaApi.listModels()`; the application itself
+keeps working — deterministic evaluation is unaffected, proven end to end by
+`LlmDegradationIntegrationTest` (Ollama base URL pointed at a closed port).
+
+### Existing integration tests pinned to a closed Ollama port
+
+Every Postgres-backed IT that triggers evaluation now sets
+`spring.ai.ollama.base-url=http://localhost:1`: on a developer machine with a real local Ollama,
+the default suite would otherwise make real model calls (violating the determinism/no-real-model
+rule). The Phase 4 vertical-slice test additionally passes `enabledEvaluatorKeys` = the nine
+deterministic keys, because it is the Phase 4 zero-Ollama checkpoint with exact metric/outcome
+expectations; the Phase 5 paths get their own ITs (`LlmEvaluationIntegrationTest` over the fake
+judge end to end, `LlmDegradationIntegrationTest` for unavailability).
+
+### Calibration is test-scoped data plus a production comparison service
+
+`src/test/resources/calibration/calibration-cases.json` holds 22 hand-labelled examples, two per
+spec §14 category, each with per-metric human labels; `CalibrationDatasetTest` keeps the file
+honest (≥20 cases, all 11 categories, labels present). `LabelAgreementService`
+(`evaluation.application`) computes agreement rate and the confusion counts over
+(automated, human) label pairs — its report text hard-codes the "small labelled calibration
+sample, not model accuracy" framing so the number can't be quietly upgraded to a quality claim.
+The real-model calibration comparison runs in `LlmJudgeOllamaIT` behind `-Pollama-it` and logs the
+report instead of asserting a quality bar: judge quality is a per-engagement, per-model property
+the consultant calibrates, not a build gate.
+
 ## Later phases
 
 To be filled in as Phases 3–8 land (orchestration model, evaluator wrapping decisions actually
@@ -905,3 +1029,75 @@ lost context — read both before starting work.
   primary, Spring AI evaluators optional secondary), untrusted-content prompt delimiters,
   configurable context truncation recorded in metadata, graceful degradation to metric-status
   FAILED when Ollama is down, and the `-Pollama-it` Maven profile.
+
+### Session 5 — 2026-07-18 — Phase 5: Local LLM evaluation
+
+- Reconciled first: Phase 4 fully checked off, `./mvnw clean verify` green (161/161), no Ollama.
+  Re-verified the Phase 0 "Spring AI 2.0.0 evaluator API surface" findings against the resolved
+  jars before building — they hold, with three additional 2.0.0 renames worth knowing:
+  `OllamaOptions` → `OllamaChatOptions` (self-typed builder), `ChatClient.options(...)` takes a
+  *builder*, and Boot 4 relocated the health API to
+  `org.springframework.boot.health.contributor`. All in "Phase 5 notes" above.
+- **Wrap vs. custom decision (the question this session had to answer): all eight LLM evaluators
+  are fully custom** structured-output evaluators over our `JudgeClient` abstraction; Spring AI's
+  `FactCheckingEvaluator` and `RelevancyEvaluator` are wrapped **nowhere**, not even as a
+  secondary signal. Reasons (details in Phase 5 notes): their single pass/score/feedback-string
+  response cannot carry per-claim verdicts with chunk IDs or per-chunk decisions; their fixed
+  prompt templates cannot carry the spec §12 untrusted-content hardening; and as a secondary
+  signal each would cost a second Ollama call per metric for evidence the custom evaluators
+  already produce in structured form.
+- **Judge infrastructure:** `evaluation.llm.JudgeClient` (+ `JudgeRequest`/`JudgeResponse`/
+  `Judge*Exception`), `evaluation.infrastructure.OllamaJudgeClient` (ChatClient over the
+  autoconfigured `OllamaChatModel`; schema enforced via Ollama's native structured-output
+  `format` from `BeanOutputConverter.getJsonSchemaMap()` plus client-side re-parse; explicit
+  `SystemMessage`/`UserMessage` so untrusted content never hits the template path; semaphore
+  bound from `OLLAMA_MAX_CONCURRENCY`), `FakeJudgeClient` in test sources (scriptable, records
+  requests for prompt-hardening assertions). Env-driven config: `LlmProperties`
+  (`OLLAMA_EVALUATOR_MODEL`/`OLLAMA_TEMPERATURE`/`OLLAMA_MAX_CONCURRENCY`) +
+  `spring.ai.ollama.base-url` ← `OLLAMA_BASE_URL`. Nothing contacts Ollama at startup.
+- **Eight evaluators** in `evaluation.llm` (keys `llm-*`; key ordering makes claim extraction run
+  before groundedness, which consumes its persisted claim evidence): claim extraction (no
+  pass/fail; claims as evidence), groundedness (pass/score derived in Java from per-claim
+  verdicts; "grounded ≠ correct if the source is outdated" in every explanation), reference
+  correctness (context excluded unless `referenceCorrectnessUsesRetrievedContext`; NA without
+  reference answer or required facts; facts-only judging flagged for review), completeness,
+  answer relevance (relevance ≠ correctness), context relevance (ratios derived in Java from
+  per-chunk decisions + persisted ranks; skipped without chunks), semantic refusal (runs on every
+  successful answer so INCORRECT_REFUSAL is observable; pass mapping depends on
+  shouldRefuse/answerable), contradiction (explicit pairs, four relations, never decides document
+  authority; CONTEXT_VS_CONTEXT → review).
+- **§14 triggers completed:** truncation/contradictory-docs/missing-reference/disclosure flagged
+  by the observing evaluator; `CrossEvaluatorReviewTriggers` (post-loop, same-aspect pairs only)
+  covers deterministic↔LLM and LLM↔LLM disagreement; FAILED evaluator results now always carry
+  `requiresHumanReview`. `EvaluationStrategy` gained `evaluatorType()`/`promptVersion()`/
+  `evaluatorModel()` defaults; `EvaluationService` persists them and now `saveAll`s per-execution
+  results after the disagreement pass (stated Phase 4 touches, all additive).
+- **Calibration:** 22 labelled examples (2 × each of the 11 §14 categories) under
+  `src/test/resources/calibration/`, kept honest by `CalibrationDatasetTest`;
+  `LabelAgreementService` produces agreement rate + TP/FP/TN/FN with the "small labelled
+  calibration sample, not model accuracy" framing baked into the report text. Real-model
+  calibration comparison logs (doesn't gate on) the numbers in `LlmJudgeOllamaIT`.
+- **Degradation proven with Ollama unreachable** (`LlmDegradationIntegrationTest`, closed port):
+  deterministic metrics COMPLETED, all 8 LLM metrics FAILED with `JudgeUnavailableException`
+  recorded + review flag, test-case outcome still PASSED (never a chatbot failure), health
+  component `evaluatorModel` DOWN with the reason. `LlmEvaluationIntegrationTest` covers the full
+  happy path over the fake judge end to end.
+- **Bug the first full verify caught:** Spring AI's retry autoconfig feeds `max-attempts` to
+  `RetryPolicy.maxRetries` and retries `ResourceAccessException` — 8 judge calls × 2 s backoff
+  stalled six pre-existing run ITs past their timeouts when Ollama was down. Fixed with
+  `spring.ai.retry.max-attempts=0` (fail fast; FAILED metrics + replay are the recovery path).
+  Existing evaluation-triggering ITs also pin `spring.ai.ollama.base-url=http://localhost:1` so a
+  developer's real local Ollama can't make the default suite touch a model; the vertical-slice
+  test now passes deterministic-only `enabledEvaluatorKeys` (it is the Phase 4 checkpoint).
+- **Tests:** `./mvnw clean verify` — BUILD SUCCESS, **198/198**, run with NO Ollama on
+  localhost:11434 (verified before the run). 37 new/updated unit tests + 3 new ITs.
+  `-Pollama-it` not run this session (no local Ollama available); it is optional per the phase
+  definition.
+- `git status` after the run: only the expected new/modified files, nothing stray.
+- **Next step:** Phase 6 — review and reports. Human-review workflow first (list pending
+  reviews — `requiresHumanReview` flags and FAILED metrics are all persisted now — submit
+  decision, override layered on top of the automated result without deleting it), then
+  `EvaluationFinding` recommendation templates, then the server-rendered Thymeleaf HTML report
+  (all 20 §22 sections, no JS, clearly showing which metrics were unavailable when Ollama was
+  down), then `docs/evaluation-methodology.md` (must include the groundedness-vs-outdated-source
+  caveat and the calibration-sample framing).

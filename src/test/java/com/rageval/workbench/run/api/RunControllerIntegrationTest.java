@@ -49,7 +49,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.ObjectNode;
 
-@SpringBootTest
+@SpringBootTest(properties = "spring.ai.ollama.base-url=http://localhost:1")
 @AutoConfigureMockMvc
 @Import(PostgresTestcontainersConfiguration.class)
 class RunControllerIntegrationTest {

@@ -41,8 +41,10 @@ import tools.jackson.databind.node.ObjectNode;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("demo")
 @Import(PostgresTestcontainersConfiguration.class)
-@org.springframework.test.context.TestPropertySource(
-        properties = "rag-evaluation.demo.slow-response-delay-millis=400")
+@org.springframework.test.context.TestPropertySource(properties = {
+    "rag-evaluation.demo.slow-response-delay-millis=400",
+    "spring.ai.ollama.base-url=http://localhost:1"
+})
 class DemoTargetIntegrationTest {
 
     @LocalServerPort

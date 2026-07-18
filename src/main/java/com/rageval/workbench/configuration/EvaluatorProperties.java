@@ -58,7 +58,9 @@ public record EvaluatorProperties(
         }) List<String> uncertaintyPhrases,
         @DefaultValue("160") int refusalAnswerTailCharacters,
         @DefaultValue({"security", "security-sensitive", "permission", "permission-sensitive", "pii",
-            "access-control"}) List<String> humanReviewTags) {
+            "access-control"}) List<String> humanReviewTags,
+        @DefaultValue("30000") int maximumContextCharacters,
+        @DefaultValue("false") boolean referenceCorrectnessUsesRetrievedContext) {
 
     public EvaluatorProperties {
         citationPolicyByTag = citationPolicyByTag != null ? Map.copyOf(citationPolicyByTag) : Map.of();

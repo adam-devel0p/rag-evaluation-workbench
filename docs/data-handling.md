@@ -71,17 +71,43 @@ against. Redirects are never followed unless a target explicitly sets `followRed
 than that — an oversized response never fully lands in memory, and is reported as an
 `INVALID_RESPONSE` outcome (`RESPONSE_TOO_LARGE`), not silently truncated or retried.
 
+## LLM evaluation stays local: Ollama only, no external or paid APIs
+
+As of Phase 5, client content (questions, chatbot answers, retrieved-chunk content, reference
+answers, expected facts) is sent to exactly one model integration: the locally running **Ollama**
+server at `spring.ai.ollama.base-url` (`OLLAMA_BASE_URL`, default `http://localhost:11434`). No
+external or paid LLM API is on the classpath or configured — the only Spring AI model starter in
+`pom.xml` is `spring-ai-starter-model-ollama`, and `OllamaJudgeClient` is the single code path
+that sends content to a model. Judge prompts and outputs are never logged; `OllamaJudgeClient`'s
+exception messages carry exception class names and the configured model name only, never prompt
+content.
+
+Spring AI's chat observations are on Micrometer's plumbing, but **prompt/completion content export
+stays disabled**: `spring.ai.chat.observations.log-prompt=false` and
+`spring.ai.chat.observations.log-completion=false` are pinned in `application.properties` (they
+are also the Spring AI defaults) so enabling content export requires an explicit, visible opt-in
+in configuration review.
+
+What the LLM evaluators persist (spec §12) is the structured judge output as evidence on
+`EvaluationMetricResult` — model name, evaluator/prompt versions, per-claim verdicts, quoted
+statements from the evaluated answer — in the same Postgres database that already stores the
+executions themselves; nothing leaves the local machine.
+
+## Untrusted-content handling in judge prompts
+
+Every judge system prompt (`UntrustedContent.SYSTEM_PREAMBLE`) marks the chatbot answer and
+retrieved context as untrusted data inside explicit BEGIN/END delimiters, forbids following
+instructions embedded in them, forbids outside factual knowledge unless the metric's rubric
+permits it, and requires answering only in the defined JSON schema. Retrieved context passed to a
+judge is capped at `rag-evaluation.evaluator.maximum-context-characters` (default 30000);
+truncation is never silent — it is recorded in evidence metadata and flags the result for human
+review.
+
 ## Not yet implemented (later phases)
 
 - Configurable storage of raw target responses and retrieved-chunk content
-  (`rag-evaluation.storage.store-raw-responses`, `store-retrieved-chunk-content`) — arrives with
-  Phase 3's `TestExecution` persistence, where those fields are first written.
+  (`rag-evaluation.storage.store-raw-responses`, `store-retrieved-chunk-content`).
 - Dev-only opt-in for verbose content logging.
 - Run deletion (what's removed, how it's triggered) — Phase 8.
-- Disabling Spring AI prompt/completion observation export — Phase 5, when Spring AI's chat client
-  is first wired up.
 - Local-only deployment mode statement and sample limitation language — Phase 8, alongside the
   full README.
-
-This project never sends target content to a paid external LLM API; the only model integration is
-Ollama, which is expected to run locally (Phase 5).

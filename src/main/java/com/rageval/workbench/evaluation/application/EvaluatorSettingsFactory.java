@@ -26,6 +26,8 @@ import org.springframework.stereotype.Component;
  * humanReviewConfidenceThreshold        number in [0, 1]
  * mandatoryEvaluators                   array of evaluator keys
  * humanReviewTags                       array of strings
+ * maximumContextCharacters              number (cap on retrieved context passed to LLM judges)
+ * referenceCorrectnessUsesRetrievedContext  boolean (spec §13.3 explicit opt-in)
  * </pre>
  *
  * Malformed values throw {@link IllegalArgumentException} with the offending key — surfaced as a
@@ -56,7 +58,26 @@ public class EvaluatorSettingsFactory {
                 (int) longValue(config, "refusalAnswerTailCharacters", properties.refusalAnswerTailCharacters()),
                 thresholdValue(config, "humanReviewConfidenceThreshold", properties.humanReviewConfidenceThreshold()),
                 stringList(config, "mandatoryEvaluators", properties.mandatoryEvaluators()),
-                stringList(config, "humanReviewTags", properties.humanReviewTags()));
+                stringList(config, "humanReviewTags", properties.humanReviewTags()),
+                (int) longValue(config, "maximumContextCharacters", properties.maximumContextCharacters()),
+                booleanValue(
+                        config,
+                        "referenceCorrectnessUsesRetrievedContext",
+                        properties.referenceCorrectnessUsesRetrievedContext()));
+    }
+
+    private boolean booleanValue(Map<String, Object> config, String key, boolean defaultValue) {
+        Object value = config.get(key);
+        if (value == null) {
+            return defaultValue;
+        }
+        if (value instanceof Boolean bool) {
+            return bool;
+        }
+        if (value instanceof String string && ("true".equalsIgnoreCase(string.trim()) || "false".equalsIgnoreCase(string.trim()))) {
+            return Boolean.parseBoolean(string.trim());
+        }
+        throw new IllegalArgumentException(key + " must be a boolean, got " + value);
     }
 
     private long longValue(Map<String, Object> config, String key, long defaultValue) {

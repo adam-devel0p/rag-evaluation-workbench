@@ -5,12 +5,14 @@ full requirements and `CLAUDE.md` for non-negotiable constraints.
 
 ## Current status
 
-**Last completed phase:** 4 — Deterministic evaluation
-**Next phase to run:** 5 — Local LLM evaluation
-**Build state:** `./mvnw clean verify` green (161/161 tests), no local Ollama required (Docker must
-be running for the Postgres Testcontainers-backed ITs). Phase 4 checkpoint proven: the app
-produces evidence-backed metric results, findings, and an aggregated summary end to end with zero
-Ollama dependency (`EvaluationVerticalSliceIntegrationTest`).
+**Last completed phase:** 5 — Local LLM evaluation
+**Next phase to run:** 6 — Review and reports
+**Build state:** `./mvnw clean verify` green (198/198 tests), verified with NO Ollama running
+(Docker must be running for the Postgres Testcontainers-backed ITs). All eight LLM evaluators run
+as `EvaluationStrategy` beans over the `JudgeClient` abstraction; the normal suite uses the
+deterministic `FakeJudgeClient` and never touches a real model; graceful degradation to
+metric-status FAILED is proven end to end (`LlmDegradationIntegrationTest`). Real-model tests:
+`./mvnw clean verify -Pollama-it` (needs Ollama + `OLLAMA_EVALUATOR_MODEL` pulled).
 
 This header is the fast resume pointer — update it as the last step of every session. For the
 full history and reasoning behind each session's decisions, see "Session Log" in
@@ -140,18 +142,37 @@ as the first item in Phase 3's checklist below.
 
 ## Phase 5 — Local LLM evaluation
 
-- [ ] Ollama configuration via env vars (`OLLAMA_BASE_URL`, `OLLAMA_EVALUATOR_MODEL`,
+- [x] Ollama configuration via env vars (`OLLAMA_BASE_URL`, `OLLAMA_EVALUATOR_MODEL`,
       `OLLAMA_TEMPERATURE`, `OLLAMA_MAX_CONCURRENCY`); app starts fine without Ollama
-- [ ] Structured judge client abstraction + deterministic fake for tests
-- [ ] ClaimExtractionEvaluator, GroundednessEvaluator (evaluate wrapping vs. custom structured
-      evaluator per the API-surface findings in `docs/architecture.md`), ReferenceCorrectnessEvaluator,
-      CompletenessEvaluator, AnswerRelevanceEvaluator (evaluate wrapping `RelevancyEvaluator`),
-      ContextRelevanceEvaluator, SemanticRefusalEvaluator, ContradictionEvaluator
-- [ ] Untrusted-content prompt delimiters + instruction-injection resistance in system prompt
-- [ ] Configurable context truncation, recorded in metadata (never silent)
-- [ ] Graceful degradation: LLM evaluator results become `FAILED` (not chatbot failure) when
-      Ollama is unavailable
-- [ ] `-Pollama-it` Maven profile for real-model tests (excluded from default `verify`)
+      (`LlmProperties` + `spring.ai.ollama.base-url` mapping; nothing contacts Ollama at startup)
+- [x] Structured judge client abstraction + deterministic fake for tests (`JudgeClient` /
+      `JudgeRequest` / `JudgeResponse` / `Judge*Exception`; `OllamaJudgeClient` via ChatClient +
+      `BeanOutputConverter` schema-enforced structured output; `FakeJudgeClient` in test sources —
+      default `./mvnw clean verify` never touches a real model)
+- [x] ClaimExtractionEvaluator, GroundednessEvaluator (custom structured evaluator per the Phase 0
+      API-surface findings — `FactCheckingEvaluator`/`RelevancyEvaluator` are NOT wrapped, see
+      "Phase 5 notes" in `docs/architecture.md`), ReferenceCorrectnessEvaluator (reference material
+      authoritative; retrieved context only via explicit `referenceCorrectnessUsesRetrievedContext`
+      opt-in; not-applicable without reference answer or required facts), CompletenessEvaluator,
+      AnswerRelevanceEvaluator, ContextRelevanceEvaluator (per-chunk decisions, ratios derived in
+      Java, skipped without chunks), SemanticRefusalEvaluator (4-way classification, runs on every
+      successful answer so INCORRECT_REFUSAL is observable), ContradictionEvaluator (explicit
+      pairs across the four relations; never decides document authority)
+- [x] Untrusted-content prompt delimiters + instruction-injection resistance in system prompt
+      (`UntrustedContent`; asserted by unit tests against the recorded fake-judge requests)
+- [x] Configurable context truncation, recorded in metadata (never silent) —
+      `rag-evaluation.evaluator.maximum-context-characters` (default 30000, per-run overridable),
+      truncation evidence + human-review flag
+- [x] Graceful degradation: LLM evaluator results become `FAILED` (not chatbot failure) when
+      Ollama is unavailable — exercised end to end by `LlmDegradationIntegrationTest` (closed
+      port), incl. `evaluatorModel` health indicator details and unaffected test-case outcomes
+- [x] `-Pollama-it` Maven profile for real-model tests (excluded from default `verify`;
+      failsafe picks up `*OllamaIT` only under the profile)
+- [x] Spec §14 additions landing with this phase: cross-evaluator disagreement review triggers
+      (`CrossEvaluatorReviewTriggers`), evaluator-failure results always flagged for review,
+      calibration dataset (22 labelled examples, all 11 §14 categories, under
+      `src/test/resources/calibration/`) + `LabelAgreementService` (agreement rate, TP/FP/TN/FN,
+      explicitly never called "model accuracy")
 
 ## Phase 6 — Review and reports
 
