@@ -1,0 +1,85 @@
+databaseChangeLog:
+  - changeSet:
+      id: 013-01-create-recommendation-template
+      author: workbench
+      changes:
+        - createTable:
+            tableName: recommendation_template
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: category
+                  type: VARCHAR(50)
+                  constraints:
+                    nullable: false
+                    unique: true
+                    uniqueConstraintName: uq_recommendation_template_category
+              - column:
+                  name: recommendation
+                  type: TEXT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+  - changeSet:
+      id: 013-02-recommendation-template-check-constraint
+      author: workbench
+      changes:
+        - sql:
+            sql: >-
+              ALTER TABLE recommendation_template
+              ADD CONSTRAINT chk_recommendation_template_category
+              CHECK (category IN ('TARGET_SYSTEM_ERROR', 'MISSING_DOCUMENTATION', 'OUTDATED_DOCUMENT',
+              'RETRIEVAL_MISS', 'RETRIEVAL_RANKING', 'IRRELEVANT_CONTEXT', 'UNSUPPORTED_CLAIM',
+              'INCORRECT_ANSWER', 'INCOMPLETE_ANSWER', 'INCORRECT_CITATION', 'MISSING_CITATION',
+              'FAILED_REFUSAL', 'UNSAFE_DISCLOSURE', 'ACCESS_CONTROL_RISK', 'INCONSISTENT_RESPONSE',
+              'HIGH_LATENCY', 'EVALUATOR_DISAGREEMENT', 'UNKNOWN'));
+      rollback:
+        - sql:
+            sql: ALTER TABLE recommendation_template DROP CONSTRAINT chk_recommendation_template_category;
+  - changeSet:
+      id: 013-03-seed-recommendation-templates
+      author: workbench
+      comment: >-
+        Default rule-based recommendation text per failure category (spec section 22: recommendations
+        come from templates tied to failure categories, then are manually editable via
+        PUT /api/v1/recommendation-templates/{category} — these seeds are starting points, not
+        hardcoded report strings).
+      changes:
+        - sql:
+            sql: >-
+              INSERT INTO recommendation_template (id, category, recommendation, created_at, updated_at) VALUES
+              ('a4f0c1d0-0001-4000-8000-000000000001', 'TARGET_SYSTEM_ERROR', 'Investigate the target system''s availability, error handling, and timeout budget for the failing requests. Reproduce the failing call outside the evaluation harness to separate infrastructure problems from application defects.', now(), now()),
+              ('a4f0c1d0-0001-4000-8000-000000000002', 'MISSING_DOCUMENTATION', 'Confirm with a domain expert that the expected information genuinely does not exist in any source document. If it is missing, add or extend the documentation and re-index; if it exists, treat this as a retrieval problem instead.', now(), now()),
+              ('a4f0c1d0-0001-4000-8000-000000000003', 'OUTDATED_DOCUMENT', 'Identify the outdated document version in the corpus, replace or archive it, and re-index. Introduce a freshness or versioning policy so superseded documents stop outranking current ones.', now(), now()),
+              ('a4f0c1d0-0001-4000-8000-000000000004', 'RETRIEVAL_MISS', 'Verify the expected document is indexed and retrievable for this phrasing of the question. Evaluate alternative chunking, embeddings, or query expansion for the failing question class.', now(), now()),
+              ('a4f0c1d0-0001-4000-8000-000000000005', 'RETRIEVAL_RANKING', 'Tune retrieval ranking so the expected document ranks above competing chunks (re-ranking, recency boosts, better chunk boundaries). First inspect the higher-ranked chunks: if they come from an outdated document, fix the corpus instead of the ranker.', now(), now()),
+              ('a4f0c1d0-0001-4000-8000-000000000006', 'IRRELEVANT_CONTEXT', 'Reduce irrelevant retrieved context through better filtering, similarity thresholds, or re-ranking so the generation step is not distracted by off-topic chunks.', now(), now()),
+              ('a4f0c1d0-0001-4000-8000-000000000007', 'UNSUPPORTED_CLAIM', 'Constrain the generation step to answer only from retrieved context (grounding instructions, citation enforcement) and prefer honest uncertainty over fabrication when the context does not contain the answer.', now(), now()),
+              ('a4f0c1d0-0001-4000-8000-000000000008', 'INCORRECT_ANSWER', 'Review the generation step for this question class against the retrieved sources: prompt instructions, context usage, and model behavior. If the source document itself is wrong, correct the corpus.', now(), now()),
+              ('a4f0c1d0-0001-4000-8000-000000000009', 'INCOMPLETE_ANSWER', 'Ensure the generation step uses the full retrieved context and does not truncate or summarize away mandatory details. Check context-window limits and answer-length constraints.', now(), now()),
+              ('a4f0c1d0-0001-4000-8000-000000000010', 'INCORRECT_CITATION', 'Fix citation construction so every citation references a document actually present in the retrieved context used for the answer.', now(), now()),
+              ('a4f0c1d0-0001-4000-8000-000000000011', 'MISSING_CITATION', 'Enable or repair citation output for this content type so every substantive answer carries its sources.', now(), now()),
+              ('a4f0c1d0-0001-4000-8000-000000000012', 'FAILED_REFUSAL', 'Strengthen the refusal policy and guardrails for this class of question, and add regression tests for the specific phrasings that bypassed them.', now(), now()),
+              ('a4f0c1d0-0001-4000-8000-000000000013', 'UNSAFE_DISCLOSURE', 'Treat as a safety incident for the target system: remove or gate the sensitive content in the corpus, harden guardrails, and verify related phrasings no longer disclose it.', now(), now()),
+              ('a4f0c1d0-0001-4000-8000-000000000014', 'ACCESS_CONTROL_RISK', 'Review permission filtering in both retrieval and generation paths: user context must restrict which documents are retrievable, verified with permission-sensitive test cases.', now(), now()),
+              ('a4f0c1d0-0001-4000-8000-000000000015', 'INCONSISTENT_RESPONSE', 'Reduce nondeterminism in the target: lower sampling temperature, stabilize retrieval ordering, or pin model versions, then re-run repetitions to confirm answers converge.', now(), now()),
+              ('a4f0c1d0-0001-4000-8000-000000000016', 'HIGH_LATENCY', 'Profile the target''s latency budget across retrieval, generation, and network. Consider caching, smaller context, or infrastructure changes to meet the acceptable latency.', now(), now()),
+              ('a4f0c1d0-0001-4000-8000-000000000017', 'EVALUATOR_DISAGREEMENT', 'Have a human reviewer resolve the disagreement between evaluators, then use the outcome to recalibrate the disagreeing evaluators (prompt, threshold, or phrase lists) — this is an evaluation-tooling action, not a change to the target system.', now(), now()),
+              ('a4f0c1d0-0001-4000-8000-000000000018', 'UNKNOWN', 'Review the failed metric evidence manually to establish a root cause before recommending any change to the target system. Do not act on an unclassified failure.', now(), now());
+      rollback:
+        - sql:
+            sql: DELETE FROM recommendation_template;

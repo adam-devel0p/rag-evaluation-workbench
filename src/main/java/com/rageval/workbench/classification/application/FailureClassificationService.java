@@ -18,6 +18,9 @@ import com.rageval.workbench.evaluation.deterministic.TransportEvaluator;
 import com.rageval.workbench.evaluation.domain.EvaluationEvidence;
 import com.rageval.workbench.evaluation.domain.EvaluationMetricResult;
 import com.rageval.workbench.evaluation.domain.MetricResultStatus;
+import com.rageval.workbench.evaluation.llm.ContextRelevanceEvaluator;
+import com.rageval.workbench.evaluation.llm.GroundednessEvaluator;
+import com.rageval.workbench.evaluation.llm.ReferenceCorrectnessEvaluator;
 import com.rageval.workbench.evaluation.infrastructure.EvaluationMetricResultRepository;
 import com.rageval.workbench.run.domain.EvaluationRun;
 import com.rageval.workbench.run.domain.ExecutionStatus;
@@ -126,6 +129,9 @@ public class FailureClassificationService {
             ruleCitationConsistency(run, testCase, execution, byKey, findings);
             ruleCitationPresence(run, testCase, execution, byKey, findings);
             ruleAnswerability(run, testCase, execution, byKey, findings);
+            ruleUnsupportedClaims(run, testCase, execution, byKey, findings, retrievalExplained);
+            ruleIrrelevantContext(run, testCase, execution, byKey, findings);
+            ruleGroundedButWrongAgainstReference(run, testCase, execution, byKey, findings);
         }
         ruleUnexplainedFailure(run, testCase, execution, byKey, results, findings);
         return findings;
@@ -469,6 +475,128 @@ public class FailureClassificationService {
                 0.5,
                 true,
                 supportingIds(answerability)));
+    }
+
+    /**
+     * Spec §16: "Answer contains claims not supported by any retrieved chunk → UNSUPPORTED_CLAIM."
+     * Fires on a failed LLM groundedness verdict (Phase 5 evaluator), but only when a retrieval
+     * category doesn't already explain the failure — an answer can't be grounded in chunks that
+     * were never retrieved. Judge-based, so a human must confirm before this counts as a root
+     * cause.
+     */
+    private void ruleUnsupportedClaims(
+            EvaluationRun run,
+            EvaluationTestCase testCase,
+            TestExecution execution,
+            Map<String, EvaluationMetricResult> byKey,
+            List<EvaluationFinding> findings,
+            boolean retrievalExplained) {
+        EvaluationMetricResult groundedness = byKey.get(GroundednessEvaluator.KEY);
+        if (retrievalExplained || !completedAndFailed(groundedness)) {
+            return;
+        }
+        findings.add(finding(
+                run,
+                testCase,
+                execution,
+                FailureCategory.UNSUPPORTED_CLAIM,
+                "Unsupported claim(s) on " + testCase.getExternalId(),
+                "The answer contains claim(s) the groundedness judge found contradicted by or absent from the "
+                        + "retrieved chunks: " + groundedness.getExplanation()
+                        + ". If no source document contains this information at all, the underlying category may "
+                        + "be MISSING_DOCUMENTATION — black-box data cannot distinguish the two",
+                "The answer states content not supported by the retrieved context (LLM judge verdict — needs "
+                        + "human confirmation)",
+                "Verify the unsupported claims manually; if confirmed, constrain the generation step to the "
+                        + "retrieved context",
+                "Every factual claim in the answer is supported by a retrieved chunk or honestly qualified",
+                evidenceOf(groundedness),
+                confidenceCappedForJudge(groundedness),
+                true,
+                supportingIds(groundedness)));
+    }
+
+    /** Spec §6.8 IRRELEVANT_CONTEXT, from the Phase 5 per-chunk context-relevance verdicts. */
+    private void ruleIrrelevantContext(
+            EvaluationRun run,
+            EvaluationTestCase testCase,
+            TestExecution execution,
+            Map<String, EvaluationMetricResult> byKey,
+            List<EvaluationFinding> findings) {
+        EvaluationMetricResult contextRelevance = byKey.get(ContextRelevanceEvaluator.KEY);
+        if (!completedAndFailed(contextRelevance)) {
+            return;
+        }
+        findings.add(finding(
+                run,
+                testCase,
+                execution,
+                FailureCategory.IRRELEVANT_CONTEXT,
+                "Irrelevant retrieved context on " + testCase.getExternalId(),
+                contextRelevance.getExplanation(),
+                "The retrieval layer surfaced predominantly irrelevant chunks for this question (LLM judge "
+                        + "per-chunk verdicts — needs human confirmation)",
+                "Review the retrieved chunks manually; if confirmed irrelevant, improve retrieval filtering or "
+                        + "ranking for this question class",
+                "The majority of retrieved chunks are relevant to the question, with a relevant chunk in the "
+                        + "top ranks",
+                evidenceOf(contextRelevance),
+                confidenceCappedForJudge(contextRelevance),
+                true,
+                supportingIds(contextRelevance)));
+    }
+
+    /**
+     * The spec §14 calibration category "grounded in outdated context but wrong against
+     * reference" made into a rule: reference correctness failed while groundedness passed. The
+     * answer faithfully reflects its retrieved context, yet contradicts the reference — which
+     * usually means the context itself is stale (OUTDATED_DOCUMENT) or the reference is; only a
+     * human can decide which, so confirmation is mandatory.
+     */
+    private void ruleGroundedButWrongAgainstReference(
+            EvaluationRun run,
+            EvaluationTestCase testCase,
+            TestExecution execution,
+            Map<String, EvaluationMetricResult> byKey,
+            List<EvaluationFinding> findings) {
+        EvaluationMetricResult referenceCorrectness = byKey.get(ReferenceCorrectnessEvaluator.KEY);
+        EvaluationMetricResult groundedness = byKey.get(GroundednessEvaluator.KEY);
+        boolean grounded = groundedness != null
+                && groundedness.getStatus() == MetricResultStatus.COMPLETED
+                && Boolean.TRUE.equals(groundedness.getPassed());
+        boolean alreadyExplained = findings.stream()
+                .anyMatch(finding -> finding.getCategory() == FailureCategory.INCORRECT_ANSWER);
+        if (!grounded || alreadyExplained || !completedAndFailed(referenceCorrectness)) {
+            return;
+        }
+        List<EvaluationEvidence> evidence = new ArrayList<>(evidenceOf(referenceCorrectness));
+        evidence.addAll(evidenceOf(groundedness));
+        findings.add(finding(
+                run,
+                testCase,
+                execution,
+                FailureCategory.INCORRECT_ANSWER,
+                "Grounded answer contradicts the reference on " + testCase.getExternalId(),
+                "The answer is grounded in its retrieved context (groundedness passed) yet fails against the "
+                        + "reference material: " + referenceCorrectness.getExplanation()
+                        + ". A grounded answer that is wrong against the reference usually means the retrieved "
+                        + "source is outdated (OUTDATED_DOCUMENT) — or the reference itself is stale. Black-box "
+                        + "data cannot decide which; a human must confirm",
+                "The answer faithfully reflects retrieved context that disagrees with the reference — "
+                        + "possibly an outdated source document",
+                "Compare the retrieved source document(s) against the reference material and update whichever "
+                        + "is outdated",
+                "The answer agrees with the (verified current) reference material",
+                evidence,
+                0.5,
+                true,
+                supportingIds(referenceCorrectness, groundedness)));
+    }
+
+    /** Judge-derived findings never claim more confidence than the judge result itself, capped at 0.6. */
+    private static Double confidenceCappedForJudge(EvaluationMetricResult result) {
+        Double confidence = result.getConfidence();
+        return confidence != null ? Math.min(confidence, 0.6) : 0.6;
     }
 
     /**

@@ -1,0 +1,633 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" lang="en">
+<head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title th:text="'Reliability Report — ' + ${report.metadata.runName}">Reliability Report</title>
+    <style>
+        :root { color-scheme: light; }
+        body { font-family: Georgia, 'Times New Roman', serif; margin: 0; color: #1a1a1a; background: #fff; line-height: 1.55; }
+        main { max-width: 62rem; margin: 0 auto; padding: 2rem 1.5rem 4rem; }
+        header.report-header { border-bottom: 3px double #333; margin-bottom: 2rem; padding-bottom: 1rem; }
+        h1 { font-size: 1.7rem; margin: 0 0 .25rem; }
+        h2 { font-size: 1.25rem; margin: 2.2rem 0 .6rem; border-bottom: 1px solid #999; padding-bottom: .2rem; }
+        h3 { font-size: 1.05rem; margin: 1.4rem 0 .4rem; }
+        h4 { font-size: .95rem; margin: 1rem 0 .3rem; }
+        table { border-collapse: collapse; width: 100%; margin: .6rem 0 1rem; font-size: .85rem; font-family: 'Helvetica Neue', Arial, sans-serif; }
+        th, td { border: 1px solid #bbb; padding: .35rem .5rem; text-align: left; vertical-align: top; }
+        th { background: #efefef; }
+        .muted { color: #555; font-size: .85rem; }
+        .subtitle { color: #444; font-size: .95rem; }
+        ul.plain { margin: .4rem 0; padding-left: 1.2rem; }
+        .badge { display: inline-block; font-family: 'Helvetica Neue', Arial, sans-serif; font-size: .72rem; font-weight: bold; padding: .1rem .45rem; border-radius: .2rem; border: 1px solid #888; background: #eee; }
+        .badge.severity-CRITICAL { background: #7a0000; color: #fff; border-color: #7a0000; }
+        .badge.severity-HIGH { background: #b34700; color: #fff; border-color: #b34700; }
+        .badge.severity-MEDIUM { background: #a08000; color: #fff; border-color: #a08000; }
+        .badge.severity-LOW { background: #4a6f2f; color: #fff; border-color: #4a6f2f; }
+        .badge.category { background: #2f4a6f; color: #fff; border-color: #2f4a6f; }
+        .finding { border: 1px solid #999; border-left: 5px solid #555; padding: .8rem 1rem; margin: 1rem 0; background: #fbfbf9; }
+        .finding dl { display: grid; grid-template-columns: 13rem 1fr; gap: .25rem .8rem; margin: .6rem 0; font-size: .88rem; }
+        .finding dt { font-weight: bold; font-family: 'Helvetica Neue', Arial, sans-serif; font-size: .8rem; color: #333; }
+        .finding dd { margin: 0; white-space: pre-wrap; }
+        blockquote.answer { border-left: 3px solid #888; margin: .3rem 0; padding: .2rem .8rem; background: #f4f4f0; white-space: pre-wrap; font-size: .9rem; }
+        .concept { font-style: italic; color: #333; margin: .3rem 0 .6rem; }
+        .kpi-row { display: flex; flex-wrap: wrap; gap: 1rem; margin: .8rem 0; font-family: 'Helvetica Neue', Arial, sans-serif; }
+        .kpi { border: 1px solid #aaa; padding: .5rem .9rem; min-width: 8rem; background: #f7f7f4; }
+        .kpi .value { font-size: 1.3rem; font-weight: bold; display: block; }
+        .kpi .label { font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; color: #444; }
+        nav.toc { font-family: 'Helvetica Neue', Arial, sans-serif; font-size: .85rem; column-count: 2; margin-bottom: 1rem; }
+        nav.toc a { color: #2f4a6f; text-decoration: none; }
+        footer { margin-top: 3rem; border-top: 1px solid #999; padding-top: .8rem; font-size: .8rem; color: #555; }
+        @media print { .finding { break-inside: avoid; } }
+    </style>
+</head>
+<body>
+<main>
+    <!-- ============ 1. Report title and run metadata ============ -->
+    <header class="report-header" id="section-1">
+        <h1>RAG Reliability Evaluation Report</h1>
+        <p class="subtitle" th:text="${report.metadata.runName} + ' — independent black-box evaluation of ' + ${report.metadata.targetName}">run</p>
+        <h2>1. Report title and run metadata</h2>
+        <table>
+            <tbody>
+            <tr><th>Run</th><td th:text="${report.metadata.runName}">name</td><th>Run ID</th><td th:text="${report.metadata.runId}">id</td></tr>
+            <tr><th>Run status</th><td th:text="${report.metadata.runStatus}">status</td><th>Run mode</th><td th:text="${report.metadata.runMode}">mode</td></tr>
+            <tr><th>Target system</th><td th:text="${report.metadata.targetName}">target</td><th>Adapter</th><td th:text="${report.metadata.adapterType}">adapter</td></tr>
+            <tr><th>Target endpoint</th><td colspan="3" th:text="${report.metadata.targetEndpointUrl}">url</td></tr>
+            <tr><th>Dataset</th><td th:text="${report.metadata.datasetName}">dataset</td><th>Dataset version</th><td th:text="${report.metadata.datasetVersion} ?: '—'">v</td></tr>
+            <tr><th>Repetitions per test case</th><td th:text="${report.metadata.repetitionsPerTestCase}">n</td><th>Run created</th><td th:text="${report.metadata.runCreatedAt}">t</td></tr>
+            <tr><th>Run started</th><td th:text="${report.metadata.runStartedAt} ?: '—'">t</td><th>Run completed</th><td th:text="${report.metadata.runCompletedAt} ?: '—'">t</td></tr>
+            <tr><th>Report generated</th><td colspan="3" th:text="${report.metadata.generatedAt} + ' (UTC)'">t</td></tr>
+            </tbody>
+        </table>
+    </header>
+
+    <nav class="toc">
+        <strong>Contents</strong><br/>
+        <a href="#section-2">2. Scope</a><br/><a href="#section-3">3. Limitations</a><br/>
+        <a href="#section-4">4. Executive summary</a><br/><a href="#section-5">5. Overall outcome counts</a><br/>
+        <a href="#section-6">6. Metrics table</a><br/><a href="#section-7">7. Results by severity</a><br/>
+        <a href="#section-8">8. Results by tag</a><br/><a href="#section-9">9. Reliability by test category</a><br/>
+        <a href="#section-10">10. High and critical findings</a><br/><a href="#section-11">11. Representative failure examples</a><br/>
+        <a href="#section-12">12. Retrieval findings</a><br/><a href="#section-13">13. Refusal and unsupported-claim findings</a><br/>
+        <a href="#section-14">14. Consistency findings</a><br/><a href="#section-15">15. Latency and target errors</a><br/>
+        <a href="#section-16">16. Human-review status</a><br/><a href="#section-17">17. Prioritized recommendations</a><br/>
+        <a href="#section-18">18. Acceptance criteria</a><br/><a href="#section-19">19. Methodology</a><br/>
+        <a href="#section-20">20. Evaluator configuration and versions</a>
+    </nav>
+
+    <!-- ============ 2. Scope ============ -->
+    <section id="section-2">
+        <h2>2. Scope</h2>
+        <p>
+            This report covers one evaluation run of the target system
+            <strong th:text="${report.metadata.targetName}">target</strong> against the dataset
+            <strong th:text="${report.scope.datasetName}">dataset</strong>
+            (<span th:text="${report.scope.testCaseCount}">n</span> test cases,
+            <span th:text="${report.scope.repetitionsPerTestCase}">n</span> repetition(s) per test case,
+            run mode <span th:text="${report.scope.runMode}">mode</span>).
+            The evaluation is black-box: it observes only the target's HTTP responses — answers, citations,
+            retrieved chunks, latency, and errors.
+        </p>
+        <p class="muted" th:if="${report.scope.datasetDescription}" th:text="${report.scope.datasetDescription}">description</p>
+        <h3>Test cases by severity</h3>
+        <table>
+            <thead><tr><th>Severity</th><th>Test cases</th></tr></thead>
+            <tbody>
+            <tr th:each="entry : ${report.scope.testCasesBySeverity}">
+                <td th:text="${entry.key}">sev</td><td th:text="${entry.value}">n</td>
+            </tr>
+            </tbody>
+        </table>
+        <h3>Test cases by tag</h3>
+        <table>
+            <thead><tr><th>Tag</th><th>Test cases</th></tr></thead>
+            <tbody>
+            <tr th:each="entry : ${report.scope.testCasesByTag}">
+                <td th:text="${entry.key}">tag</td><td th:text="${entry.value}">n</td>
+            </tr>
+            </tbody>
+        </table>
+    </section>
+
+    <!-- ============ 3. Limitations ============ -->
+    <section id="section-3">
+        <h2>3. Limitations</h2>
+        <ul class="plain">
+            <li th:each="limitation : ${report.limitations}" th:text="${limitation}">limitation</li>
+        </ul>
+    </section>
+
+    <!-- ============ 4. Executive summary ============ -->
+    <section id="section-4">
+        <h2>4. Executive summary</h2>
+        <div class="kpi-row">
+            <div class="kpi"><span class="value" th:text="${report.executiveSummary.totalTestCases}">0</span><span class="label">Test cases</span></div>
+            <div class="kpi"><span class="value" th:text="${report.executiveSummary.passed}">0</span><span class="label">Passed</span></div>
+            <div class="kpi"><span class="value" th:text="${report.executiveSummary.failed}">0</span><span class="label">Failed</span></div>
+            <div class="kpi"><span class="value" th:text="${report.executiveSummary.passRate != null ? #numbers.formatPercent(report.executiveSummary.passRate, 1, 1) : 'n/a'}">0%</span><span class="label">Pass rate</span></div>
+            <div class="kpi"><span class="value" th:text="${report.executiveSummary.highOrCriticalFailures}">0</span><span class="label">High/critical failures</span></div>
+            <div class="kpi"><span class="value" th:text="${report.executiveSummary.humanReviewBacklog}">0</span><span class="label">Pending human reviews</span></div>
+        </div>
+        <p>
+            Of <span th:text="${report.executiveSummary.totalTestCases}">n</span> test cases,
+            <span th:text="${report.executiveSummary.passed}">n</span> passed and
+            <span th:text="${report.executiveSummary.failed}">n</span> failed their mandatory metrics
+            (<span th:text="${report.executiveSummary.inconclusive}">n</span> inconclusive,
+            <span th:text="${report.executiveSummary.notEvaluated}">n</span> not evaluated).
+            <span th:text="${report.executiveSummary.executionFailures}">n</span> target invocation(s) failed at the
+            transport level<span th:if="${report.executiveSummary.targetErrorRate != null}">
+            (target error rate <span th:text="${#numbers.formatPercent(report.executiveSummary.targetErrorRate, 1, 1)}">x</span>)</span>.
+            The run produced <span th:text="${report.executiveSummary.totalFindings}">n</span> evidence-backed finding(s).
+        </p>
+        <table th:if="${!report.executiveSummary.findingsByCategory.isEmpty()}">
+            <thead><tr><th>Failure category</th><th>Findings</th></tr></thead>
+            <tbody>
+            <tr th:each="categoryCount : ${report.executiveSummary.findingsByCategory}">
+                <td><span class="badge category" th:text="${categoryCount.category}">cat</span></td>
+                <td th:text="${categoryCount.count}">n</td>
+            </tr>
+            </tbody>
+        </table>
+    </section>
+
+    <!-- ============ 5. Overall outcome counts ============ -->
+    <section id="section-5">
+        <h2>5. Overall outcome counts</h2>
+        <table>
+            <thead><tr><th>Level</th><th>Total</th><th>Passed / Succeeded</th><th>Failed</th><th>Inconclusive</th><th>Not evaluated / other</th></tr></thead>
+            <tbody>
+            <tr>
+                <td>Test cases</td>
+                <td th:text="${report.summary.testCaseOutcomes.total}">0</td>
+                <td th:text="${report.summary.testCaseOutcomes.passed}">0</td>
+                <td th:text="${report.summary.testCaseOutcomes.failed}">0</td>
+                <td th:text="${report.summary.testCaseOutcomes.inconclusive}">0</td>
+                <td th:text="${report.summary.testCaseOutcomes.notEvaluated}">0</td>
+            </tr>
+            <tr>
+                <td>Executions (repetitions)</td>
+                <td th:text="${report.summary.executions.total}">0</td>
+                <td th:text="${report.summary.executions.succeeded}">0</td>
+                <td th:text="${report.summary.executions.failed}">0</td>
+                <td>—</td>
+                <td th:text="${report.summary.executions.cancelled} + ' cancelled, ' + ${report.summary.executions.incomplete} + ' incomplete'">0</td>
+            </tr>
+            </tbody>
+        </table>
+        <p class="muted">A test case is the worst of its repetitions; failed executions are transport-level target failures, counted separately from failed metrics.</p>
+    </section>
+
+    <!-- ============ 6. Metrics table ============ -->
+    <section id="section-6">
+        <h2>6. Metrics table</h2>
+        <table>
+            <thead>
+            <tr><th>Evaluator</th><th>Applicable</th><th>Completed</th><th>Passed</th><th>Failed (chatbot)</th><th>Evaluator errors</th><th>Not applicable</th><th>Pass rate</th></tr>
+            </thead>
+            <tbody>
+            <tr th:each="metric : ${report.summary.metrics}">
+                <td th:text="${metric.evaluatorKey}">key</td>
+                <td th:text="${metric.applicableExecutionCount}">0</td>
+                <td th:text="${metric.completedCount}">0</td>
+                <td th:text="${metric.passedCount}">0</td>
+                <td th:text="${metric.failedCount}">0</td>
+                <td th:text="${metric.evaluatorErrorCount}">0</td>
+                <td th:text="${metric.notApplicableCount}">0</td>
+                <td th:text="${metric.passRate != null ? #numbers.formatPercent(metric.passRate, 1, 1) : 'n/a'}">0%</td>
+            </tr>
+            </tbody>
+        </table>
+        <p class="muted">
+            "Failed (chatbot)" means the target failed the metric. "Evaluator errors" means the evaluator itself
+            failed (e.g. the local judge model was unavailable) — those results are excluded from every pass-rate
+            denominator and are never counted against the chatbot. A pass rate of "n/a" means no completed
+            evaluation exists to compute one; it is not zero.
+        </p>
+    </section>
+
+    <!-- ============ 7. Results by severity ============ -->
+    <section id="section-7">
+        <h2>7. Results by severity</h2>
+        <table>
+            <thead><tr><th>Severity</th><th>Passed</th><th>Failed</th><th>Pass rate</th></tr></thead>
+            <tbody>
+            <tr th:each="entry : ${report.summary.passRateBySeverity}">
+                <td><span class="badge" th:classappend="'severity-' + ${entry.key}" th:text="${entry.key}">sev</span></td>
+                <td th:text="${entry.value.passed}">0</td>
+                <td th:text="${entry.value.failed}">0</td>
+                <td th:text="${entry.value.passRate != null ? #numbers.formatPercent(entry.value.passRate, 1, 1) : 'n/a'}">0%</td>
+            </tr>
+            </tbody>
+        </table>
+    </section>
+
+    <!-- ============ 8. Results by tag ============ -->
+    <section id="section-8">
+        <h2>8. Results by tag</h2>
+        <table>
+            <thead><tr><th>Tag</th><th>Passed</th><th>Failed</th><th>Pass rate</th></tr></thead>
+            <tbody>
+            <tr th:each="entry : ${report.summary.passRateByTag}">
+                <td th:text="${entry.key}">tag</td>
+                <td th:text="${entry.value.passed}">0</td>
+                <td th:text="${entry.value.failed}">0</td>
+                <td th:text="${entry.value.passRate != null ? #numbers.formatPercent(entry.value.passRate, 1, 1) : 'n/a'}">0%</td>
+            </tr>
+            </tbody>
+        </table>
+    </section>
+
+    <!-- ============ 9. Reliability by test category ============ -->
+    <section id="section-9">
+        <h2>9. Reliability by test category</h2>
+        <p class="muted">Grouped by what the question demands of the system — answering, refusing, or admitting ignorance.</p>
+        <table>
+            <thead><tr><th>Question type</th><th>Total</th><th>Passed</th><th>Failed</th><th>Inconclusive</th><th>Not evaluated</th><th>Pass rate</th></tr></thead>
+            <tbody>
+            <tr th:each="group : ${report.reliabilityByQuestionType}">
+                <td th:text="${group.label}">type</td>
+                <td th:text="${group.total}">0</td>
+                <td th:text="${group.passed}">0</td>
+                <td th:text="${group.failed}">0</td>
+                <td th:text="${group.inconclusive}">0</td>
+                <td th:text="${group.notEvaluated}">0</td>
+                <td th:text="${group.passRate != null ? #numbers.formatPercent(group.passRate, 1, 1) : 'n/a'}">0%</td>
+            </tr>
+            </tbody>
+        </table>
+    </section>
+
+    <!-- ============ 10. High and critical findings ============ -->
+    <section id="section-10">
+        <h2>10. High and critical findings</h2>
+        <p th:if="${report.highAndCriticalFindings.isEmpty()}">No findings on HIGH or CRITICAL test cases.</p>
+        <div th:each="detail : ${report.highAndCriticalFindings}">
+            <div th:replace="~{run-report :: finding(${detail})}"></div>
+        </div>
+    </section>
+
+    <!-- ============ 11. Representative failure examples ============ -->
+    <section id="section-11">
+        <h2>11. Representative failure examples</h2>
+        <p class="muted">
+            One representative example per failure category. Incorrect, unsupported, incomplete, retrieval-failure,
+            and unknown-root-cause answers are distinct concepts and are reported as such — never blended into a
+            single "failed" bucket.
+        </p>
+        <p th:if="${report.failuresByCategory.isEmpty()}">No findings were produced by this run.</p>
+        <div th:each="group : ${report.failuresByCategory}">
+            <h3><span class="badge category" th:text="${group.category}">cat</span>
+                <span th:text="' — ' + ${group.findingCount} + ' finding(s), test case(s): ' + ${#strings.listJoin(group.affectedTestCaseIds, ', ')}">count</span></h3>
+            <p class="concept" th:text="${group.conceptExplanation}">concept</p>
+            <div th:if="${group.representativeExample != null}">
+                <div th:replace="~{run-report :: finding(${group.representativeExample})}"></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ============ 12. Retrieval findings ============ -->
+    <section id="section-12">
+        <h2>12. Retrieval findings</h2>
+        <div class="kpi-row" th:if="${report.summary.retrieval != null and report.summary.retrieval.evaluatedCount > 0}">
+            <div class="kpi"><span class="value" th:text="${report.summary.retrieval.hitRateAt1 != null ? #numbers.formatPercent(report.summary.retrieval.hitRateAt1, 1, 1) : 'n/a'}">0</span><span class="label">Hit@1</span></div>
+            <div class="kpi"><span class="value" th:text="${report.summary.retrieval.hitRateAt3 != null ? #numbers.formatPercent(report.summary.retrieval.hitRateAt3, 1, 1) : 'n/a'}">0</span><span class="label">Hit@3</span></div>
+            <div class="kpi"><span class="value" th:text="${report.summary.retrieval.hitRateAt5 != null ? #numbers.formatPercent(report.summary.retrieval.hitRateAt5, 1, 1) : 'n/a'}">0</span><span class="label">Hit@5</span></div>
+            <div class="kpi"><span class="value" th:text="${report.summary.retrieval.meanReciprocalRank != null ? #numbers.formatDecimal(report.summary.retrieval.meanReciprocalRank, 1, 3) : 'n/a'}">0</span><span class="label">Mean reciprocal rank</span></div>
+        </div>
+        <p th:if="${report.retrievalFindings.isEmpty()}">No retrieval-side findings.</p>
+        <div th:each="group : ${report.retrievalFindings}">
+            <h3><span class="badge category" th:text="${group.category}">cat</span> <span th:text="' — ' + ${group.findingCount} + ' finding(s)'">n</span></h3>
+            <p class="concept" th:text="${group.conceptExplanation}">concept</p>
+            <table>
+                <thead><tr><th>Test case</th><th>Rep.</th><th>Severity</th><th>Finding</th><th>Confidence</th><th>Human review</th></tr></thead>
+                <tbody>
+                <tr th:each="row : ${group.rows}">
+                    <td th:text="${row.testCaseExternalId}">id</td>
+                    <td th:text="${row.repetitionNumber}">1</td>
+                    <td><span class="badge" th:classappend="'severity-' + ${row.severity}" th:text="${row.severity}">sev</span></td>
+                    <td th:text="${row.title}">title</td>
+                    <td th:text="${row.confidence != null ? #numbers.formatDecimal(row.confidence, 1, 2) : '—'}">c</td>
+                    <td th:text="${row.humanReviewStatus}">status</td>
+                </tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <!-- ============ 13. Refusal and unsupported-claim findings ============ -->
+    <section id="section-13">
+        <h2>13. Refusal and unsupported-claim findings</h2>
+        <p th:if="${report.refusalAndUnsupportedFindings.isEmpty()}">No refusal or unsupported-claim findings.</p>
+        <div th:each="group : ${report.refusalAndUnsupportedFindings}">
+            <h3><span class="badge category" th:text="${group.category}">cat</span> <span th:text="' — ' + ${group.findingCount} + ' finding(s)'">n</span></h3>
+            <p class="concept" th:text="${group.conceptExplanation}">concept</p>
+            <table>
+                <thead><tr><th>Test case</th><th>Rep.</th><th>Severity</th><th>Finding</th><th>Confidence</th><th>Human review</th></tr></thead>
+                <tbody>
+                <tr th:each="row : ${group.rows}">
+                    <td th:text="${row.testCaseExternalId}">id</td>
+                    <td th:text="${row.repetitionNumber}">1</td>
+                    <td><span class="badge" th:classappend="'severity-' + ${row.severity}" th:text="${row.severity}">sev</span></td>
+                    <td th:text="${row.title}">title</td>
+                    <td th:text="${row.confidence != null ? #numbers.formatDecimal(row.confidence, 1, 2) : '—'}">c</td>
+                    <td th:text="${row.humanReviewStatus}">status</td>
+                </tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <!-- ============ 14. Consistency findings ============ -->
+    <section id="section-14">
+        <h2>14. Consistency findings</h2>
+        <p th:if="${report.summary.consistency != null and report.summary.consistency.comparableTestCases > 0}">
+            <span th:text="${report.summary.consistency.consistentTestCases}">n</span> of
+            <span th:text="${report.summary.consistency.comparableTestCases}">n</span> multi-repetition test cases
+            behaved consistently across repetitions
+            (<span th:text="${report.summary.consistency.consistencyRate != null ? #numbers.formatPercent(report.summary.consistency.consistencyRate, 1, 1) : 'n/a'}">x</span>).
+            Consistency compares fact-level behavior — required-fact matches, forbidden claims, refusal behavior,
+            citations, retrieval ranks — never wording.
+        </p>
+        <p th:if="${report.consistencyFindings.isEmpty()}">No material inconsistency across repetitions.</p>
+        <div th:each="group : ${report.consistencyFindings}">
+            <p class="concept" th:text="${group.conceptExplanation}">concept</p>
+            <table>
+                <thead><tr><th>Test case</th><th>Severity</th><th>Finding</th><th>Human review</th></tr></thead>
+                <tbody>
+                <tr th:each="row : ${group.rows}">
+                    <td th:text="${row.testCaseExternalId}">id</td>
+                    <td><span class="badge" th:classappend="'severity-' + ${row.severity}" th:text="${row.severity}">sev</span></td>
+                    <td th:text="${row.title}">title</td>
+                    <td th:text="${row.humanReviewStatus}">status</td>
+                </tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <!-- ============ 15. Latency and target errors ============ -->
+    <section id="section-15">
+        <h2>15. Latency and target errors</h2>
+        <div class="kpi-row" th:if="${report.summary.latency != null}">
+            <div class="kpi"><span class="value" th:text="${#numbers.formatDecimal(report.summary.latency.median, 1, 0)} + ' ms'">0</span><span class="label">Median</span></div>
+            <div class="kpi"><span class="value" th:text="${#numbers.formatDecimal(report.summary.latency.p90, 1, 0)} + ' ms'">0</span><span class="label">p90</span></div>
+            <div class="kpi"><span class="value" th:text="${#numbers.formatDecimal(report.summary.latency.p95, 1, 0)} + ' ms'">0</span><span class="label">p95</span></div>
+            <div class="kpi"><span class="value" th:text="${report.summary.latency.maximum} + ' ms'">0</span><span class="label">Maximum</span></div>
+            <div class="kpi"><span class="value" th:text="${report.summary.latency.sampleCount}">0</span><span class="label">Samples</span></div>
+        </div>
+        <p th:if="${report.summary.latency == null}">No latency samples were recorded.</p>
+        <p th:if="${report.summary.targetErrorRate != null}">
+            Target error rate: <strong th:text="${#numbers.formatPercent(report.summary.targetErrorRate, 1, 1)}">x</strong>
+            of terminal executions failed at the transport level.
+        </p>
+        <p th:if="${report.latencyAndErrorFindings.isEmpty()}">No latency or target-error findings.</p>
+        <div th:each="group : ${report.latencyAndErrorFindings}">
+            <h3><span class="badge category" th:text="${group.category}">cat</span> <span th:text="' — ' + ${group.findingCount} + ' finding(s)'">n</span></h3>
+            <p class="concept" th:text="${group.conceptExplanation}">concept</p>
+            <table>
+                <thead><tr><th>Test case</th><th>Rep.</th><th>Severity</th><th>Finding</th><th>Human review</th></tr></thead>
+                <tbody>
+                <tr th:each="row : ${group.rows}">
+                    <td th:text="${row.testCaseExternalId}">id</td>
+                    <td th:text="${row.repetitionNumber}">1</td>
+                    <td><span class="badge" th:classappend="'severity-' + ${row.severity}" th:text="${row.severity}">sev</span></td>
+                    <td th:text="${row.title}">title</td>
+                    <td th:text="${row.humanReviewStatus}">status</td>
+                </tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <!-- ============ 16. Human-review status ============ -->
+    <section id="section-16">
+        <h2>16. Human-review status</h2>
+        <div class="kpi-row">
+            <div class="kpi"><span class="value" th:text="${report.humanReview.flaggedTotal}">0</span><span class="label">Flagged for review</span></div>
+            <div class="kpi"><span class="value" th:text="${report.humanReview.pendingCount}">0</span><span class="label">Still pending</span></div>
+            <div class="kpi"><span class="value" th:text="${report.humanReview.reviewedCount}">0</span><span class="label">Results reviewed</span></div>
+            <div class="kpi"><span class="value" th:text="${report.humanReview.findingsConfirmed} + ' / ' + ${report.humanReview.findingsRequiringConfirmation}">0</span><span class="label">Findings confirmed / requiring confirmation</span></div>
+        </div>
+        <table th:if="${!report.humanReview.decisionCounts.isEmpty()}">
+            <thead><tr><th>Decision</th><th>Count</th></tr></thead>
+            <tbody>
+            <tr th:each="entry : ${report.humanReview.decisionCounts}">
+                <td th:text="${entry.key}">d</td><td th:text="${entry.value}">n</td>
+            </tr>
+            </tbody>
+        </table>
+        <h3 th:if="${!report.humanReview.reviews.isEmpty()}">Recorded decisions (automated verdict shown alongside — an override never deletes the automated result)</h3>
+        <table th:if="${!report.humanReview.reviews.isEmpty()}">
+            <thead>
+            <tr><th>Test case</th><th>Evaluator</th><th>Automated verdict</th><th>Human decision</th><th>Override</th><th>Reviewer</th><th>Comment</th></tr>
+            </thead>
+            <tbody>
+            <tr th:each="review : ${report.humanReview.reviews}">
+                <td th:text="${review.testCaseExternalId}">id</td>
+                <td th:text="${review.evaluatorKey}">key</td>
+                <td th:text="${review.automatedStatus} + (${review.automatedPassed != null} ? (${review.automatedPassed} ? ', passed' : ', failed') : '') + (${review.automatedScore != null} ? (', score ' + ${review.automatedScore}) : '')">v</td>
+                <td th:text="${review.decision}">d</td>
+                <td th:text="${review.overridePassed != null ? ('passed=' + review.overridePassed + (review.overrideScore != null ? (', score=' + review.overrideScore) : '')) : (review.overrideScore != null ? ('score=' + review.overrideScore) : '—')}">o</td>
+                <td th:text="${review.reviewerName}">r</td>
+                <td th:text="${review.comment} ?: ''">c</td>
+            </tr>
+            </tbody>
+        </table>
+        <p class="muted">Pending items are served by the review API (<code>GET /api/v1/reviews/pending</code>) with full per-result context.</p>
+    </section>
+
+    <!-- ============ 17. Prioritized recommendations ============ -->
+    <section id="section-17">
+        <h2>17. Prioritized recommendations</h2>
+        <p class="muted">
+            Recommendations come from rule-based templates tied to failure categories (editable via
+            <code>PUT /api/v1/recommendation-templates/{category}</code>), never from unconstrained model output.
+            Priority reflects the highest affected severity, then how many findings share the category.
+        </p>
+        <p th:if="${report.recommendations.isEmpty()}">No findings — no recommendations.</p>
+        <div th:each="recommendation : ${report.recommendations}">
+            <h3>
+                <span th:text="${recommendation.rank} + '. '">1.</span>
+                <span class="badge category" th:text="${recommendation.category}">cat</span>
+                <span class="badge" th:classappend="'severity-' + ${recommendation.maxSeverity}" th:text="${recommendation.maxSeverity}">sev</span>
+                <span class="muted" th:text="' ' + ${recommendation.findingCount} + ' finding(s) across ' + ${recommendation.affectedTestCaseCount} + ' test case(s), e.g. ' + ${#strings.listJoin(recommendation.exampleTestCaseIds, ', ')}">n</span>
+            </h3>
+            <p th:text="${recommendation.recommendedChange}">template text</p>
+            <ul class="plain" th:if="${!recommendation.specificRecommendations.isEmpty()}">
+                <li th:each="specific : ${recommendation.specificRecommendations}" th:text="'Specific: ' + ${specific}">s</li>
+            </ul>
+        </div>
+    </section>
+
+    <!-- ============ 18. Acceptance criteria ============ -->
+    <section id="section-18">
+        <h2>18. Acceptance criteria</h2>
+        <p class="muted">What a fixed system must demonstrably do, per finding — the re-evaluation checklist for the next candidate run.</p>
+        <p th:if="${report.acceptanceCriteria.isEmpty()}">No findings — no acceptance criteria.</p>
+        <table th:if="${!report.acceptanceCriteria.isEmpty()}">
+            <thead><tr><th>Category</th><th>Test case</th><th>Acceptance criteria</th></tr></thead>
+            <tbody>
+            <tr th:each="criterion : ${report.acceptanceCriteria}">
+                <td><span class="badge category" th:text="${criterion.category}">cat</span></td>
+                <td th:text="${criterion.testCaseExternalId}">id</td>
+                <td th:text="${criterion.criteria}">criteria</td>
+            </tr>
+            </tbody>
+        </table>
+    </section>
+
+    <!-- ============ 19. Methodology ============ -->
+    <section id="section-19">
+        <h2>19. Methodology</h2>
+        <p>
+            The workbench evaluates the target as a black box: each test case's question is sent over HTTP
+            (with the configured repetitions), and the normalized answer, citations, retrieved chunks, latency,
+            and errors are persisted before any judgment is made. Evaluation then runs in two tiers:
+        </p>
+        <ul class="plain">
+            <li><strong>Deterministic evaluators</strong> (transport, latency, required facts, forbidden claims,
+                phrase-based refusal, citation presence, expected documents, citation–retrieval consistency,
+                answerability) apply exact rules to the persisted evidence. They carry confidence 1.0 where matching
+                is exact and lower confidence where phrase heuristics are involved.</li>
+            <li><strong>LLM evaluators</strong> (claim extraction, groundedness, reference correctness, completeness,
+                answer relevance, context relevance, semantic refusal, contradiction) use a local judge model with
+                schema-enforced structured output. Scores are derived in code from the judge's per-item decisions —
+                never taken as an unexplained number — and untrusted content is delimited so it cannot instruct the judge.</li>
+        </ul>
+        <p>
+            Every metric result distinguishes three outcomes: the chatbot failed the metric; the evaluator itself
+            failed (never counted against the chatbot); or the metric was not applicable (with the reason persisted).
+            Failure classification applies evidence-based rules (spec §16); where black-box data proves only a
+            symptom, the finding reports the root cause as undetermined from black-box data rather than guessing.
+            Results matching the human-review triggers (low confidence, evaluator disagreement, HIGH/CRITICAL severity,
+            truncated context, security-sensitive tags, evaluator failures) are flagged and routed to the review queue;
+            a human decision never deletes the automated result.
+        </p>
+        <p class="muted">
+            Full per-evaluator definitions, known limitations, and interpretation guidance:
+            <code>docs/evaluation-methodology.md</code> in the workbench repository. Judge agreement is calibrated
+            against a small labelled sample — an agreement rate over that sample, not "model accuracy".
+        </p>
+    </section>
+
+    <!-- ============ 20. Evaluator configuration and versions ============ -->
+    <section id="section-20">
+        <h2>20. Evaluator configuration and versions</h2>
+        <table>
+            <thead><tr><th>Evaluator</th><th>Type</th><th>Version</th><th>Judge model</th><th>Prompt version</th><th>Results</th><th>Evaluator errors</th></tr></thead>
+            <tbody>
+            <tr th:each="evaluator : ${report.evaluators}">
+                <td th:text="${evaluator.evaluatorKey}">key</td>
+                <td th:text="${evaluator.evaluatorType}">type</td>
+                <td th:text="${evaluator.evaluatorVersion}">v</td>
+                <td th:text="${evaluator.evaluatorModel} ?: '—'">m</td>
+                <td th:text="${evaluator.promptVersion} ?: '—'">p</td>
+                <td th:text="${evaluator.resultCount}">0</td>
+                <td th:text="${evaluator.errorCount}">0</td>
+            </tr>
+            </tbody>
+        </table>
+        <h3>Effective evaluator settings for this run</h3>
+        <table>
+            <tbody>
+            <tr><th>Enabled evaluators</th><td th:text="${report.enabledEvaluatorKeys.isEmpty()} ? 'all registered evaluators' : ${#strings.listJoin(report.enabledEvaluatorKeys, ', ')}">all</td></tr>
+            <tr><th>Maximum acceptable latency</th><td th:text="${report.settings.maximumAcceptableLatencyMilliseconds} + ' ms (&lt;= 0 disables the check)'">2000</td></tr>
+            <tr><th>Citation policy (default)</th><td th:text="${report.settings.citationPolicy}">OPTIONAL</td></tr>
+            <tr><th>Citation policy by tag</th><td th:text="${report.settings.citationPolicyByTag.isEmpty()} ? '—' : ${report.settings.citationPolicyByTag}">—</td></tr>
+            <tr><th>Mandatory evaluators (test-case outcome)</th><td th:text="${#strings.listJoin(report.settings.mandatoryEvaluatorKeys, ', ')}">keys</td></tr>
+            <tr><th>Human-review confidence threshold</th><td th:text="${report.settings.humanReviewConfidenceThreshold}">0.7</td></tr>
+            <tr><th>Human-review tags</th><td th:text="${report.settings.humanReviewTags.isEmpty()} ? '—' : ${#strings.listJoin(report.settings.humanReviewTags, ', ')}">—</td></tr>
+            <tr><th>Maximum context characters (LLM judging)</th><td th:text="${report.settings.maximumContextCharacters}">30000</td></tr>
+            <tr><th>Reference correctness may see retrieved context</th><td th:text="${report.settings.referenceCorrectnessUsesRetrievedContext}">false</td></tr>
+            </tbody>
+        </table>
+    </section>
+
+    <footer>
+        Generated by the RAG Evaluation Workbench at
+        <span th:text="${report.metadata.generatedAt}">t</span> for run
+        <span th:text="${report.metadata.runId}">id</span>.
+        This report renders entirely server-side and requires no JavaScript.
+    </footer>
+</main>
+
+<!-- ============ Finding detail fragment: every field spec §22 requires of a major finding ============ -->
+<div th:fragment="finding(f)" class="finding" th:if="${f != null}">
+    <h4>
+        <span class="badge category" th:text="${f.category}">cat</span>
+        <span class="badge" th:classappend="'severity-' + ${f.severity}" th:text="${f.severity}">sev</span>
+        <span th:text="${f.title}">title</span>
+        <span class="muted" th:text="'(' + ${f.testCaseExternalId} + ', repetition ' + ${f.repetitionNumber} + ')'">ref</span>
+    </h4>
+    <dl>
+        <dt>Question</dt><dd th:text="${f.question} ?: '—'">q</dd>
+        <dt>Expected behavior</dt><dd th:text="${f.expectedBehavior} ?: '—'">e</dd>
+        <dt>Relevant reference facts</dt>
+        <dd>
+            <span th:if="${f.requiredFacts.isEmpty() and f.forbiddenClaims.isEmpty() and f.referenceAnswer == null}">—</span>
+            <span th:if="${f.referenceAnswer != null}" th:text="'Reference answer: ' + ${f.referenceAnswer}">ref</span>
+            <ul class="plain" th:if="${!f.requiredFacts.isEmpty()}">
+                <li th:each="fact : ${f.requiredFacts}" th:text="'Required: ' + ${fact}">fact</li>
+            </ul>
+            <ul class="plain" th:if="${!f.forbiddenClaims.isEmpty()}">
+                <li th:each="claim : ${f.forbiddenClaims}" th:text="'Forbidden: ' + ${claim}">claim</li>
+            </ul>
+        </dd>
+        <dt>Expected documents</dt>
+        <dd th:text="${f.expectedDocumentIds.isEmpty()} ? '—' : ${#strings.listJoin(f.expectedDocumentIds, ', ')}">docs</dd>
+    </dl>
+    <h4>Actual response</h4>
+    <blockquote class="answer" th:text="${f.actualResponse} ?: '(not recorded)'">answer</blockquote>
+    <dl>
+        <dt>Citations</dt>
+        <dd>
+            <span th:if="${f.citations.isEmpty()}">none</span>
+            <ul class="plain" th:if="${!f.citations.isEmpty()}">
+                <li th:each="citation : ${f.citations}"
+                    th:text="${citation.documentId} + (${citation.documentTitle != null} ? (' — ' + ${citation.documentTitle}) : '') + (${citation.section != null} ? (' (' + ${citation.section} + ')') : '')">c</li>
+            </ul>
+        </dd>
+        <dt>Retrieved chunks</dt>
+        <dd>
+            <span th:if="${f.retrievedChunks.isEmpty()}">none exposed by the target</span>
+            <ul class="plain" th:if="${!f.retrievedChunks.isEmpty()}">
+                <li th:each="chunk : ${f.retrievedChunks}"
+                    th:text="'rank ' + ${chunk.rank} + ': ' + ${chunk.documentId} + (${chunk.documentTitle != null} ? (' — ' + ${chunk.documentTitle}) : '') + (${chunk.content != null} ? (' | ' + ${#strings.abbreviate(chunk.content, 200)}) : '')">chunk</li>
+            </ul>
+        </dd>
+        <dt>Failed / supporting metrics</dt>
+        <dd>
+            <span th:if="${f.failedMetrics.isEmpty()}">—</span>
+            <ul class="plain" th:if="${!f.failedMetrics.isEmpty()}">
+                <li th:each="metric : ${f.failedMetrics}">
+                    <strong th:text="${metric.evaluatorKey}">key</strong>
+                    <span th:text="' [' + ${metric.status} + (${metric.passed != null} ? (${metric.passed} ? ', passed' : ', failed') : '') + (${metric.score != null} ? (', score ' + ${#numbers.formatDecimal(metric.score, 1, 2)}) : '') + ']: '">v</span>
+                    <span th:text="${metric.explanation}">explanation</span>
+                    <ul class="plain" th:if="${!metric.humanDecisions.isEmpty()}">
+                        <li th:each="decision : ${metric.humanDecisions}" th:text="'Human review: ' + ${decision}">d</li>
+                    </ul>
+                </li>
+            </ul>
+        </dd>
+        <dt>Observed problem</dt><dd th:text="${f.observedProblem}">summary</dd>
+        <dt>Likely cause</dt><dd th:text="${f.likelyCause} ?: 'Root cause: undetermined from black-box data'">cause</dd>
+        <dt>Severity</dt><dd><span class="badge" th:classappend="'severity-' + ${f.severity}" th:text="${f.severity}">sev</span></dd>
+        <dt>Rule confidence</dt><dd th:text="${f.confidence != null ? #numbers.formatDecimal(f.confidence, 1, 2) : '—'}">c</dd>
+        <dt>Evidence</dt>
+        <dd>
+            <span th:if="${f.evidence.isEmpty()}">—</span>
+            <ul class="plain" th:if="${!f.evidence.isEmpty()}">
+                <li th:each="item : ${f.evidence}"
+                    th:text="'[' + ${item.type} + '] ' + ${item.description} + (${item.documentId != null} ? (' (document ' + ${item.documentId} + (${item.chunkRank != null} ? (', rank ' + ${item.chunkRank}) : '') + ')') : '') + (${item.quotedText != null} ? (' — “' + ${#strings.abbreviate(item.quotedText, 160)} + '”') : '')">evidence</li>
+            </ul>
+        </dd>
+        <dt>Recommended change (template)</dt>
+        <dd th:text="${f.templateRecommendation} ?: '(no template configured for this category)'">template</dd>
+        <dt>Recommended change (specific)</dt><dd th:text="${f.specificRecommendation} ?: '—'">specific</dd>
+        <dt>Acceptance criteria</dt><dd th:text="${f.acceptanceCriteria} ?: '—'">criteria</dd>
+        <dt>Human-review status</dt><dd th:text="${f.humanReviewStatus}">status</dd>
+    </dl>
+</div>
+</body>
+</html>

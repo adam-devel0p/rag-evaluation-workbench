@@ -35,3 +35,6 @@ databaseChangeLog:
   - include:
       file: db/changelog/changes/012-evaluation-finding-classification-fields.yaml
       relativeToChangelogFile: false
+  - include:
+      file: db/changelog/changes/013-recommendation-template.yaml
+      relativeToChangelogFile: false

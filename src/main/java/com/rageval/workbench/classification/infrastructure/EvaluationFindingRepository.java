@@ -12,4 +12,6 @@ public interface EvaluationFindingRepository extends JpaRepository<EvaluationFin
     List<EvaluationFinding> findByEvaluationRunId(UUID evaluationRunId);
 
     Page<EvaluationFinding> findByEvaluationRunId(UUID evaluationRunId, Pageable pageable);
+
+    List<EvaluationFinding> findByTestExecutionId(UUID testExecutionId);
 }

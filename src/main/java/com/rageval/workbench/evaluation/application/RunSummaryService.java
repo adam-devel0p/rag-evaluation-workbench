@@ -12,7 +12,6 @@ import com.rageval.workbench.evaluation.domain.EvaluatorSettings;
 import com.rageval.workbench.evaluation.domain.MetricResultStatus;
 import com.rageval.workbench.evaluation.domain.TestCaseOutcome;
 import com.rageval.workbench.evaluation.infrastructure.EvaluationMetricResultRepository;
-import com.rageval.workbench.review.infrastructure.HumanReviewRepository;
 import com.rageval.workbench.run.domain.EvaluationRun;
 import com.rageval.workbench.run.domain.ExecutionStatus;
 import com.rageval.workbench.run.domain.TestExecution;
@@ -46,7 +45,7 @@ public class RunSummaryService {
     private final TestExecutionRepository executionRepository;
     private final EvaluationTestCaseRepository testCaseRepository;
     private final EvaluationMetricResultRepository metricResultRepository;
-    private final HumanReviewRepository humanReviewRepository;
+    private final HumanReviewLookup humanReviewLookup;
     private final EvaluatorSettingsFactory settingsFactory;
     private final RepetitionConsistencyAnalyzer consistencyAnalyzer;
 
@@ -55,14 +54,14 @@ public class RunSummaryService {
             TestExecutionRepository executionRepository,
             EvaluationTestCaseRepository testCaseRepository,
             EvaluationMetricResultRepository metricResultRepository,
-            HumanReviewRepository humanReviewRepository,
+            HumanReviewLookup humanReviewLookup,
             EvaluatorSettingsFactory settingsFactory,
             RepetitionConsistencyAnalyzer consistencyAnalyzer) {
         this.runRepository = runRepository;
         this.executionRepository = executionRepository;
         this.testCaseRepository = testCaseRepository;
         this.metricResultRepository = metricResultRepository;
-        this.humanReviewRepository = humanReviewRepository;
+        this.humanReviewLookup = humanReviewLookup;
         this.settingsFactory = settingsFactory;
         this.consistencyAnalyzer = consistencyAnalyzer;
     }
@@ -82,12 +81,8 @@ public class RunSummaryService {
                 allResults.stream().collect(Collectors.groupingBy(EvaluationMetricResult::getTestExecutionId));
         Set<UUID> reviewedMetricResultIds = allResults.isEmpty()
                 ? Set.of()
-                : humanReviewRepository
-                        .findByMetricResultIdIn(
-                                allResults.stream().map(EvaluationMetricResult::getId).toList())
-                        .stream()
-                        .map(review -> review.getMetricResultId())
-                        .collect(Collectors.toSet());
+                : humanReviewLookup.reviewedMetricResultIds(
+                        allResults.stream().map(EvaluationMetricResult::getId).toList());
 
         List<RunSummary.TestCaseSummary> testCaseSummaries =
                 testCaseSummaries(executions, resultsByExecution, testCases, settings.mandatoryEvaluatorKeys());

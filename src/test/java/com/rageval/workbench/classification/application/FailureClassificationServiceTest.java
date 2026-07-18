@@ -31,6 +31,9 @@ import com.rageval.workbench.evaluation.domain.EvaluationResult;
 import com.rageval.workbench.evaluation.domain.EvaluationStrategy;
 import com.rageval.workbench.evaluation.domain.EvaluatorType;
 import com.rageval.workbench.evaluation.domain.MetricResultStatus;
+import com.rageval.workbench.evaluation.llm.ContextRelevanceEvaluator;
+import com.rageval.workbench.evaluation.llm.GroundednessEvaluator;
+import com.rageval.workbench.evaluation.llm.ReferenceCorrectnessEvaluator;
 import com.rageval.workbench.run.domain.EvaluationRun;
 import com.rageval.workbench.run.domain.ExecutionStatus;
 import com.rageval.workbench.run.domain.TestExecution;
@@ -254,5 +257,104 @@ class FailureClassificationServiceTest {
                         evaluated(new ExpectedDocumentEvaluator(), context),
                         evaluated(new CitationRetrievalConsistencyEvaluator(), context))));
         assertThat(findings).isEmpty();
+    }
+
+    // --- Phase 6: LLM-evidence rules. These rules key only off evaluator key + status/passed of
+    // the Phase 5 results (they quote explanations verbatim rather than parsing evidence shapes),
+    // so hand-built results with the real evaluator keys are drift-safe here.
+
+    private EvaluationMetricResult llmResult(String evaluatorKey, TestExecution execution, boolean passed) {
+        return new EvaluationMetricResult(
+                execution.getId(),
+                evaluatorKey,
+                EvaluatorType.LLM,
+                "1",
+                "fake-judge",
+                "v1",
+                MetricResultStatus.COMPLETED,
+                passed,
+                passed ? 1.0 : 0.0,
+                0.8,
+                passed ? "judge found no problems" : "judge found unsupported/contradicted content",
+                List.of(),
+                false,
+                1L,
+                null);
+    }
+
+    @Test
+    void failedGroundednessYieldsUnsupportedClaimNeedingConfirmation() {
+        EvaluationTestCase testCase = answerableTestCase(List.of(), List.of(), List.of());
+        TestExecution execution =
+                succeededExecution("An answer with fabricated content.", List.of(), List.of(chunk("doc", 1)), null);
+        List<EvaluationFinding> findings = service.classifyExecution(
+                run, testCase, execution, List.of(llmResult(GroundednessEvaluator.KEY, execution, false)));
+        assertThat(categories(findings)).containsExactly(FailureCategory.UNSUPPORTED_CLAIM);
+        assertThat(findings.get(0).isRequiresHumanConfirmation()).isTrue();
+        assertThat(findings.get(0).getConfidence()).isLessThanOrEqualTo(0.6);
+        assertThat(findings.get(0).getSummary()).contains("MISSING_DOCUMENTATION");
+    }
+
+    @Test
+    void failedGroundednessAfterRetrievalMissStaysARetrievalFinding() {
+        EvaluationTestCase testCase = answerableTestCase(List.of(), List.of(), List.of("missing-doc"));
+        TestExecution execution =
+                succeededExecution("some answer", List.of(), List.of(chunk("other", 1)), null);
+        EvaluationContext context = context(testCase, execution);
+        List<EvaluationFinding> findings = service.classifyExecution(
+                run,
+                testCase,
+                execution,
+                List.of(
+                        evaluated(new ExpectedDocumentEvaluator(), context),
+                        llmResult(GroundednessEvaluator.KEY, execution, false)));
+        assertThat(categories(findings)).containsExactly(FailureCategory.RETRIEVAL_MISS);
+    }
+
+    @Test
+    void failedContextRelevanceYieldsIrrelevantContext() {
+        EvaluationTestCase testCase = answerableTestCase(List.of(), List.of(), List.of());
+        TestExecution execution =
+                succeededExecution("an answer", List.of(), List.of(chunk("off-topic", 1)), null);
+        List<EvaluationFinding> findings = service.classifyExecution(
+                run, testCase, execution, List.of(llmResult(ContextRelevanceEvaluator.KEY, execution, false)));
+        assertThat(categories(findings)).containsExactly(FailureCategory.IRRELEVANT_CONTEXT);
+        assertThat(findings.get(0).isRequiresHumanConfirmation()).isTrue();
+    }
+
+    @Test
+    void groundedButWrongAgainstReferenceNamesOutdatedDocumentAlternative() {
+        EvaluationTestCase testCase = answerableTestCase(List.of(), List.of(), List.of());
+        TestExecution execution =
+                succeededExecution("A faithful summary of a stale document.", List.of(), List.of(chunk("doc", 1)), null);
+        List<EvaluationFinding> findings = service.classifyExecution(
+                run,
+                testCase,
+                execution,
+                List.of(
+                        llmResult(GroundednessEvaluator.KEY, execution, true),
+                        llmResult(ReferenceCorrectnessEvaluator.KEY, execution, false)));
+        assertThat(categories(findings)).containsExactly(FailureCategory.INCORRECT_ANSWER);
+        EvaluationFinding finding = findings.get(0);
+        assertThat(finding.isRequiresHumanConfirmation()).isTrue();
+        assertThat(finding.getSummary()).contains("OUTDATED_DOCUMENT");
+        assertThat(finding.getSupportingMetricResultIds()).hasSize(2);
+    }
+
+    @Test
+    void referenceFailureWithoutGroundednessPassIsNotClaimedAsOutdatedDocument() {
+        EvaluationTestCase testCase = answerableTestCase(List.of(), List.of(), List.of());
+        TestExecution execution =
+                succeededExecution("a wrong and ungrounded answer", List.of(), List.of(chunk("doc", 1)), null);
+        List<EvaluationFinding> findings = service.classifyExecution(
+                run,
+                testCase,
+                execution,
+                List.of(
+                        llmResult(GroundednessEvaluator.KEY, execution, false),
+                        llmResult(ReferenceCorrectnessEvaluator.KEY, execution, false)));
+        // Groundedness failed too, so the unsupported-claim rule owns it; the grounded-but-wrong
+        // rule must not fire without a groundedness pass.
+        assertThat(categories(findings)).containsExactly(FailureCategory.UNSUPPORTED_CLAIM);
     }
 }

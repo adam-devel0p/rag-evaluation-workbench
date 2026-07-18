@@ -5,13 +5,14 @@ full requirements and `CLAUDE.md` for non-negotiable constraints.
 
 ## Current status
 
-**Last completed phase:** 5 — Local LLM evaluation
-**Next phase to run:** 6 — Review and reports
-**Build state:** `./mvnw clean verify` green (198/198 tests), verified with NO Ollama running
-(Docker must be running for the Postgres Testcontainers-backed ITs). All eight LLM evaluators run
-as `EvaluationStrategy` beans over the `JudgeClient` abstraction; the normal suite uses the
-deterministic `FakeJudgeClient` and never touches a real model; graceful degradation to
-metric-status FAILED is proven end to end (`LlmDegradationIntegrationTest`). Real-model tests:
+**Last completed phase:** 6 — Review and reports
+**Next phase to run:** 7 — Replay and comparison
+**Build state:** `./mvnw clean verify` green (208/208 tests), verified with NO Ollama running
+(Docker must be running for the Postgres Testcontainers-backed ITs). The human-review workflow
+(pending queue with filters, full review context, append-only decisions with overrides that never
+touch the automated result), editable per-category recommendation templates (migration 013), and
+the 20-section server-rendered HTML report at `GET /reports/runs/{id}` (no JavaScript) are all
+proven end to end by `ReviewAndReportIntegrationTest`. Real-model tests:
 `./mvnw clean verify -Pollama-it` (needs Ollama + `OLLAMA_EVALUATOR_MODEL` pulled).
 
 This header is the fast resume pointer — update it as the last step of every session. For the
@@ -176,11 +177,30 @@ as the first item in Phase 3's checklist below.
 
 ## Phase 6 — Review and reports
 
-- [ ] Human-review workflow (list pending, submit decision, override without deleting automated
-      result)
-- [ ] `EvaluationFinding` generation, rule-based recommendation templates
-- [ ] Server-rendered Thymeleaf HTML report (all 20 sections per §22), no JS required
-- [ ] `docs/evaluation-methodology.md`
+- [x] Human-review workflow (list pending, submit decision, override without deleting automated
+      result) — `GET /api/v1/reviews/pending` (filters: run, severity, evaluator, metric status;
+      most-severe first), `GET /api/v1/metric-results/{id}/review-context` (full question/answer/
+      chunks/reference/evidence/explanation + existing reviews), `GET`/`POST
+      /api/v1/metric-results/{id}/reviews` (CONFIRMED/REJECTED/UNCERTAIN/NEEDS_DOMAIN_EXPERT,
+      optional pass/score override on the review row — automated result never mutated, proven by
+      unit + integration test); a CONFIRMED review confirms findings supported by that result
+- [x] `EvaluationFinding` generation, rule-based recommendation templates —
+      `recommendation_template` table (migration 013) seeded with defaults for all 18 §6.8
+      categories, editable via `GET/PUT /api/v1/recommendation-templates/{category}` (report
+      reads current text at render time — edit → re-render reflects it, proven by IT); three
+      additive LLM-evidence classification rules (groundedness-fail → UNSUPPORTED_CLAIM,
+      context-relevance-fail → IRRELEVANT_CONTEXT, grounded-but-reference-wrong →
+      INCORRECT_ANSWER naming OUTDATED_DOCUMENT, all requiring human confirmation)
+- [x] Server-rendered Thymeleaf HTML report (all 20 sections per §22), no JS required —
+      `GET /reports/runs/{id}`, `RunReportService` assembles everything from persisted data;
+      finding details show question/expected/actual/reference facts/chunks/citations/failed
+      metrics/observed problem/likely cause/severity/evidence/recommendation (template +
+      specific)/acceptance criteria/human-review status; incorrect vs unsupported vs incomplete
+      vs retrieval-failure vs unknown stay separate categories with concept explanations;
+      IT asserts every section heading, both automated + human verdicts, and `<script`-free HTML
+- [x] `docs/evaluation-methodology.md` — per-evaluator measures/limitations/interpretation,
+      incl. the grounded-but-outdated caveat and the calibration "agreement, not accuracy"
+      framing
 
 ## Phase 7 — Replay and comparison
 

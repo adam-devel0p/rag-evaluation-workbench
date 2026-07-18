@@ -748,6 +748,97 @@ The real-model calibration comparison runs in `LlmJudgeOllamaIT` behind `-Pollam
 report instead of asserting a quality bar: judge quality is a per-engagement, per-model property
 the consultant calibrates, not a build gate.
 
+## Phase 6 notes
+
+### Review module sits on top; the one existing downward edge was inverted
+
+Phase 4 left one edge pointing the wrong way for Phase 6: `evaluation.application.RunSummaryService`
+imported `review.infrastructure.HumanReviewRepository`. With the review workflow now needing
+metric results, executions, test cases, *and* findings, `review` must be an upper-layer module
+(`review → classification → evaluation → run → target`), so that edge was inverted with the same
+pattern Phase 4 used for `run.application.EvaluationPipeline`: `evaluation.application.HumanReviewLookup`
+is a one-method interface owned by evaluation ("which of these metric results have a review"),
+implemented by `review.application.HumanReviewLookupAdapter`. This is a deliberate touch to
+passing Phase 4 code (constructor swap only, behavior identical) stated per the working
+agreement. `report` is the new top of the stack — it reads every module and nothing depends on it.
+
+### Pending-review queue: dynamic JPQL, not derived queries or `:param is null` guards
+
+`ReviewQueueRepository` builds the pending query (`requiresHumanReview = true` and no
+`HumanReview` row) by appending only the non-null filter predicates (run, severity, evaluator
+key, metric status) and binding just those parameters. A single static JPQL with
+`(:severity is null or t.severity = :severity)` guards was rejected because PostgreSQL's
+parameter-type inference is unreliable for null-bound enum/uuid parameters, and a Spring Data
+derived query can't express the cross-aggregate join (metric result × execution × test case) plus
+optional filters. Ordering is a severity `case` rank (CRITICAL first) then flag time, so the queue
+is a triage list. "Status" filtering deliberately means *metric* status: `COMPLETED` = a chatbot
+verdict to double-check, `FAILED` = the evaluator broke and a human must fill the gap — the same
+never-conflate rule the rest of the system enforces.
+
+### Reviews are append-only; CONFIRMED confirms the findings the result supports
+
+A review never mutates the automated result (unit-tested: repository save of the metric result is
+never called; integration-tested: status/passed/score/explanation identical after review). A
+metric result can accumulate several reviews (UNCERTAIN → later NEEDS_DOMAIN_EXPERT →
+CONFIRMED); consumers treat the latest as effective, and the report prints them all. A CONFIRMED
+decision additionally sets `humanConfirmed` on findings of the same execution that list the
+reviewed result in `supportingMetricResultIds` and await confirmation — the reviewer has looked
+at exactly the evidence the finding rests on. REJECTED/UNCERTAIN never confirm anything.
+
+### Recommendation templates are rows, not resources baked into the report template
+
+Migration 013 creates `recommendation_template` (one row per §6.8 failure category, all 18
+seeded with fixed UUIDs) and `PUT /api/v1/recommendation-templates/{category}` edits the text.
+The report reads the *current* text at render time, so an edited recommendation shows up on the
+next render without re-running or re-classifying anything — the integration test proves it by
+editing RETRIEVAL_MISS and re-rendering. Findings still persist their rule-generated
+evidence-specific recommendation; the report shows both ("recommended change (template)" +
+"(specific)"). If a template row is somehow missing, the report says so and falls back to the
+per-finding text — it never invents one.
+
+### Three additive LLM-evidence classification rules (and the ones deliberately not written)
+
+Phase 4's §16 rules only consumed deterministic results. Now that Phase 5 results exist, three
+rules were added to `FailureClassificationService`, all additive and inert when no LLM results
+are present (so every deterministic-only test and the degradation path are untouched):
+groundedness COMPLETED+failed → UNSUPPORTED_CLAIM (§16's own example, naming
+MISSING_DOCUMENTATION as the black-box-indistinguishable alternative); context-relevance
+COMPLETED+failed → IRRELEVANT_CONTEXT; reference-correctness failed *while groundedness passed* →
+INCORRECT_ANSWER with the "grounded in outdated context but wrong against reference" reading and
+OUTDATED_DOCUMENT named for human confirmation. Judge-derived findings cap their confidence at
+0.6 and always require human confirmation. Deliberately *not* rule-generated:
+MISSING_DOCUMENTATION and OUTDATED_DOCUMENT as primary categories (black-box data cannot prove a
+document's absence or staleness — they appear as named alternatives inside findings needing
+confirmation) and EVALUATOR_DISAGREEMENT findings (disagreement already flags both results into
+the review queue via `CrossEvaluatorReviewTriggers`; duplicating it as a finding would double-
+report tooling signals as target problems). Templates still exist for every category so a future
+rule or a human-assigned category always has a recommendation.
+
+### Report: one service assembles everything; the template renders, decides nothing
+
+`GET /reports/runs/{id}` (plain `@Controller`, `text/html`, no JavaScript — the IT asserts the
+page contains no `<script`) renders `run-report.html` from a single `RunReport` record built by
+`RunReportService`: run/target/dataset metadata, the §18 summary (sections 5–8), reliability by
+question type (answerable / refusal-expected / unanswerable — the axis tags don't cover),
+finding details, category groups, human-review state, prioritized recommendations, acceptance
+criteria, evaluator versions (from persisted metric results, so a replay shows what actually
+judged it), and the resolved evaluator settings. Every §22 major-finding field is rendered by a
+single Thymeleaf fragment reused across sections 10 and 11. Categories are never blended:
+section 11 shows one representative example per category with a concept explanation
+distinguishing incorrect / unsupported / incomplete / retrieval-failure / unknown; sections
+12–15 are category-set views (retrieval, refusal+unsupported, consistency, latency/errors) as
+compact tables. Section 3 (limitations) is partly dynamic: evaluator-error counts ("tool
+failures, never chatbot failures"), truncated-context counts, LLM-judge caveats only when LLM
+results exist, and a non-COMPLETED run status warning. Human-review section shows automated
+verdict and human decision side by side — an override never hides the automated result.
+
+### Report content vs. logging privacy
+
+The report deliberately contains full questions/answers/chunks/citations — it is the deliverable
+the consultant hands over, rendered server-side on demand from the local database. The privacy
+rules (spec §23) govern *logs and metrics*, which remain content-free; nothing in the report
+path logs content, and `RunReportService` never touches the log with payloads.
+
 ## Later phases
 
 To be filled in as Phases 3–8 land (orchestration model, evaluator wrapping decisions actually
@@ -1101,3 +1192,62 @@ lost context — read both before starting work.
   (all 20 §22 sections, no JS, clearly showing which metrics were unavailable when Ollama was
   down), then `docs/evaluation-methodology.md` (must include the groundedness-vs-outdated-source
   caveat and the calibration-sample framing).
+
+### Session 6 — 2026-07-18 — Phase 6: Review and reports
+
+- Reconciled first: Phase 5 fully checked off; `./mvnw clean verify` re-run before starting —
+  BUILD SUCCESS, 198/198, no Ollama (verified unreachable), Docker running.
+- **Human-review API (spec §20):** `GET /api/v1/reviews/pending` — flagged, still-unreviewed
+  metric results joined with execution + test case, filterable by run / severity / evaluator key /
+  metric status, ordered CRITICAL-first then oldest (dynamic JPQL in `ReviewQueueRepository`;
+  static null-guard JPQL rejected over Postgres parameter-type inference for null enum/uuid
+  binds). `GET /api/v1/metric-results/{id}/review-context` serves the complete reviewable
+  context (question, answer, chunks, citations, reference facts, evidence, explanation, prior
+  reviews); `POST /api/v1/metric-results/{id}/reviews` records
+  CONFIRMED/REJECTED/UNCERTAIN/NEEDS_DOMAIN_EXPERT with optional pass/score override **on the
+  review row only** — the automated result is never mutated (unit + IT proven). CONFIRMED also
+  confirms findings supported by the reviewed result. The "status" filter means *metric* status:
+  COMPLETED = chatbot verdict to check, FAILED = evaluator broke — never conflated.
+- **Module layering:** review is now an upper module (review → classification → evaluation →
+  run); the one wrong-direction edge (RunSummaryService → HumanReviewRepository, from Phase 4)
+  was inverted via the `HumanReviewLookup` interface in evaluation.application (stated Phase 4
+  touch, constructor swap only). New `report` module is the top of the stack; nothing depends on
+  it.
+- **Recommendation templates (spec §22):** `recommendation_template` table, migration 013,
+  seeded defaults for all 18 §6.8 categories; `GET/PUT /api/v1/recommendation-templates/{category}`.
+  The report reads current text at render time — the IT edits RETRIEVAL_MISS and asserts the
+  re-rendered report shows the edit. Findings keep their rule-generated specific
+  recommendation; the report shows template + specific side by side.
+- **Classification extended (additive, inert without LLM results):** groundedness-fail →
+  UNSUPPORTED_CLAIM; context-relevance-fail → IRRELEVANT_CONTEXT; reference-wrong-but-grounded →
+  INCORRECT_ANSWER naming OUTDATED_DOCUMENT ("grounded in outdated context but wrong against
+  reference"). All judge-derived findings cap confidence at 0.6 and require human confirmation.
+  Deliberately not rule-generated: MISSING_DOCUMENTATION / OUTDATED_DOCUMENT as primary
+  categories (unprovable black-box) and EVALUATOR_DISAGREEMENT findings (already routed to
+  review via the §14 triggers; a finding would double-report tooling signals) — reasoning in
+  "Phase 6 notes".
+- **Report (spec §22):** `GET /reports/runs/{id}`, Thymeleaf `run-report.html`, zero JavaScript
+  (IT asserts no `<script`), all 20 sections; per-finding fragment shows every required field
+  incl. template + specific recommendation and human-review status; incorrect / unsupported /
+  incomplete / retrieval-failure / unknown stay separate categories with concept explanations;
+  section 9 groups reliability by question type (answerable / refusal-expected / unanswerable);
+  limitations section dynamically reports evaluator errors ("tool failures, never chatbot
+  failures"), context truncation, and non-COMPLETED run status; human-review section prints
+  automated verdict and human decision side by side.
+- **`docs/evaluation-methodology.md`** written: per-evaluator measures / limitations /
+  interpretation, the grounded-answer-can-be-wrong-if-source-outdated caveat, and the
+  "agreement rate over a labelled sample, not model accuracy" calibration framing.
+- **Tests:** `./mvnw clean verify` — BUILD SUCCESS, **208/208** (was 198), NO Ollama running
+  (probed before the run). New: 5 classification-rule unit tests, 4 `HumanReviewServiceTest`
+  unit tests, and `ReviewAndReportIntegrationTest` (full slice: import → demo target → run →
+  queue filters → context → decision → automated-result-untouched proof → report with all 20
+  headings + both verdicts → template-edit re-render → 404).
+- `git status` after the run: only the expected new/modified files, nothing stray.
+- **Next step:** Phase 7 — replay and comparison. `POST /api/v1/evaluation-runs/{id}/replay`
+  creating a REPLAY run whose executions carry `sourceExecutionId` (schema ready since Phase 1)
+  and re-evaluate stored responses through current evaluators without any live target call
+  (`ImportedTraceTargetSystemAdapter` shows the adapter-side pattern; replay needs its own
+  adapter or a service path that copies stored invocation results); then the baseline-vs-candidate
+  comparison service + `GET /api/v1/run-comparisons`, the HTML comparison report
+  (`GET /reports/comparisons?baselineRunId=..&candidateRunId=..`), and evaluator-version mismatch
+  warnings sourced from the per-result evaluator version/prompt metadata persisted since Phase 5.
