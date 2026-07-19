@@ -2,6 +2,7 @@ package com.rageval.workbench.run.api;
 
 import com.rageval.workbench.common.api.PageResponse;
 import com.rageval.workbench.run.api.dto.CreateRunRequest;
+import com.rageval.workbench.run.api.dto.ReplayRunRequest;
 import com.rageval.workbench.run.api.dto.RunResponse;
 import com.rageval.workbench.run.api.dto.TestExecutionResponse;
 import com.rageval.workbench.run.application.RunService;
@@ -69,6 +70,20 @@ public class RunController {
     @ResponseStatus(HttpStatus.ACCEPTED)
     public RunResponse resume(@PathVariable UUID id) {
         return RunResponse.from(runService.resume(id));
+    }
+
+    /**
+     * Creates (but does not start) a REPLAY run from this run's captured executions. Like every
+     * other run it is then started via {@code POST /{id}/start}; the worker copies the stored
+     * responses instead of calling the target. The body is optional — see {@link ReplayRunRequest}.
+     */
+    @PostMapping("/{id}/replay")
+    public ResponseEntity<RunResponse> replay(
+            @PathVariable UUID id, @RequestBody(required = false) ReplayRunRequest request) {
+        RunResponse response = RunResponse.from(runService.replay(id, request));
+        return ResponseEntity.accepted()
+                .location(URI.create("/api/v1/evaluation-runs/" + response.id()))
+                .body(response);
     }
 
     @GetMapping("/{id}/executions")

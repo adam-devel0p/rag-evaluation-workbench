@@ -6,6 +6,7 @@ import com.rageval.workbench.run.domain.RetrievedChunk;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Profile;
@@ -30,14 +31,33 @@ public class DemoTargetService {
 
     private final long slowResponseDelayMillis;
     private final AtomicInteger inconsistentAnswerCounter = new AtomicInteger();
+    private final Map<String, String> scenarioRedirects = new ConcurrentHashMap<>();
 
     public DemoTargetService(
             @Value("${rag-evaluation.demo.slow-response-delay-millis:3000}") long slowResponseDelayMillis) {
         this.slowResponseDelayMillis = slowResponseDelayMillis;
     }
 
+    /**
+     * Simulates a changed target between two runs (spec §19's baseline/candidate scenario): each
+     * entry re-routes one scenario to another scenario's behavior — e.g. {@code DEMO-002 →
+     * DEMO-001} makes the wrong-answer scenario answer correctly ("the bot was fixed"), and the
+     * reverse redirect breaks a previously correct one. In-memory demo-only state, like the
+     * inconsistency counter; replaces any previously configured redirects.
+     */
+    public void redirectScenarios(Map<String, String> redirects) {
+        scenarioRedirects.clear();
+        redirects.forEach((from, to) ->
+                scenarioRedirects.put(from.toUpperCase(Locale.ROOT), to.toUpperCase(Locale.ROOT)));
+    }
+
+    public void clearScenarioRedirects() {
+        scenarioRedirects.clear();
+    }
+
     public DemoOutcome chat(DemoChatRequest request) {
-        String scenario = selectScenario(request);
+        String selected = selectScenario(request);
+        String scenario = scenarioRedirects.getOrDefault(selected, selected);
         return switch (scenario) {
             case "DEMO-001" -> ok(response(
                     "The payments service requires Java 21.",

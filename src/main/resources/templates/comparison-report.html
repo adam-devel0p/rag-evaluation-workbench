@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" lang="en">
+<head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title th:text="'Run Comparison — ' + ${comparison.baseline.name} + ' vs ' + ${comparison.candidate.name}">Run Comparison</title>
+    <style>
+        :root { color-scheme: light; }
+        body { font-family: Georgia, 'Times New Roman', serif; margin: 0; color: #1a1a1a; background: #fff; line-height: 1.55; }
+        main { max-width: 62rem; margin: 0 auto; padding: 2rem 1.5rem 4rem; }
+        header.report-header { border-bottom: 3px double #333; margin-bottom: 2rem; padding-bottom: 1rem; }
+        h1 { font-size: 1.7rem; margin: 0 0 .25rem; }
+        h2 { font-size: 1.25rem; margin: 2.2rem 0 .6rem; border-bottom: 1px solid #999; padding-bottom: .2rem; }
+        table { border-collapse: collapse; width: 100%; margin: .6rem 0 1rem; font-size: .85rem; font-family: 'Helvetica Neue', Arial, sans-serif; }
+        th, td { border: 1px solid #bbb; padding: .35rem .5rem; text-align: left; vertical-align: top; }
+        th { background: #efefef; }
+        .muted { color: #555; font-size: .85rem; }
+        .subtitle { color: #444; font-size: .95rem; }
+        .warning-box { border: 2px solid #b34700; background: #fff4ec; padding: .8rem 1rem; margin: 1rem 0; }
+        .warning-box h2 { border: none; margin: 0 0 .4rem; color: #b34700; font-size: 1.05rem; }
+        .warning-box ul { margin: .3rem 0; padding-left: 1.2rem; }
+        .badge { display: inline-block; font-family: 'Helvetica Neue', Arial, sans-serif; font-size: .72rem; font-weight: bold; padding: .1rem .45rem; border-radius: .2rem; border: 1px solid #888; background: #eee; }
+        .badge.severity-CRITICAL { background: #7a0000; color: #fff; border-color: #7a0000; }
+        .badge.severity-HIGH { background: #b34700; color: #fff; border-color: #b34700; }
+        .badge.severity-MEDIUM { background: #a08000; color: #fff; border-color: #a08000; }
+        .badge.severity-LOW { background: #4a6f2f; color: #fff; border-color: #4a6f2f; }
+        .badge.change-IMPROVED { background: #4a6f2f; color: #fff; border-color: #4a6f2f; }
+        .badge.change-REGRESSED { background: #7a0000; color: #fff; border-color: #7a0000; }
+        .badge.change-UNCHANGED { background: #eee; color: #333; }
+        .badge.change-INCONCLUSIVE { background: #a08000; color: #fff; border-color: #a08000; }
+        .badge.change-ADDED, .badge.change-REMOVED { background: #2f4a6f; color: #fff; border-color: #2f4a6f; }
+        .kpi-row { display: flex; flex-wrap: wrap; gap: 1rem; margin: .8rem 0; font-family: 'Helvetica Neue', Arial, sans-serif; }
+        .kpi { border: 1px solid #aaa; padding: .5rem .9rem; min-width: 8rem; background: #f7f7f4; }
+        .kpi .value { font-size: 1.3rem; font-weight: bold; display: block; }
+        .kpi .label { font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; color: #444; }
+        ul.summary-lines { list-style: none; margin: .6rem 0; padding: 0; font-family: 'Helvetica Neue', Arial, sans-serif; font-size: .95rem; }
+        ul.summary-lines li { padding: .15rem 0; }
+        footer { margin-top: 3rem; border-top: 1px solid #999; padding-top: .8rem; font-size: .8rem; color: #555; }
+    </style>
+</head>
+<body>
+<main>
+    <!-- ============ 1. Title and run metadata ============ -->
+    <header class="report-header" id="section-1">
+        <h1>Baseline vs. Candidate Comparison</h1>
+        <p class="subtitle">
+            <span th:text="${comparison.baseline.name}">baseline</span> →
+            <span th:text="${comparison.candidate.name}">candidate</span>
+        </p>
+        <h2>1. Compared runs</h2>
+        <table>
+            <thead><tr><th></th><th>Baseline</th><th>Candidate</th></tr></thead>
+            <tbody>
+            <tr><th>Run</th><td th:text="${comparison.baseline.name}">b</td><td th:text="${comparison.candidate.name}">c</td></tr>
+            <tr><th>Run ID</th><td th:text="${comparison.baseline.runId}">b</td><td th:text="${comparison.candidate.runId}">c</td></tr>
+            <tr><th>Status</th><td th:text="${comparison.baseline.status}">b</td><td th:text="${comparison.candidate.status}">c</td></tr>
+            <tr><th>Run mode</th><td th:text="${comparison.baseline.runMode}">b</td><td th:text="${comparison.candidate.runMode}">c</td></tr>
+            <tr><th>Dataset ID</th><td th:text="${comparison.baseline.datasetId}">b</td><td th:text="${comparison.candidate.datasetId}">c</td></tr>
+            <tr><th>Repetitions per test case</th><td th:text="${comparison.baseline.repetitionsPerTestCase}">b</td><td th:text="${comparison.candidate.repetitionsPerTestCase}">c</td></tr>
+            <tr><th>Started</th><td th:text="${comparison.baseline.startedAt} ?: '—'">b</td><td th:text="${comparison.candidate.startedAt} ?: '—'">c</td></tr>
+            <tr><th>Completed</th><td th:text="${comparison.baseline.completedAt} ?: '—'">b</td><td th:text="${comparison.candidate.completedAt} ?: '—'">c</td></tr>
+            </tbody>
+        </table>
+    </header>
+
+    <!-- ============ 2. Warnings ============ -->
+    <div class="warning-box" th:if="${!comparison.warnings.isEmpty()}" id="section-2">
+        <h2>Comparison caveats — read before interpreting</h2>
+        <ul>
+            <li th:each="warning : ${comparison.warnings}" th:text="${warning}">warning</li>
+        </ul>
+    </div>
+    <p class="muted" th:if="${comparison.warnings.isEmpty()}">
+        No comparison caveats: same dataset, same repetition count, and identical evaluator versions in both runs.
+    </p>
+
+    <!-- ============ 3. Executive summary ============ -->
+    <section id="section-3">
+        <h2>2. Executive summary</h2>
+        <ul class="summary-lines">
+            <li th:each="metric : ${comparison.metricRates}">
+                <strong th:text="${metric.evaluatorKey}">metric</strong>:
+                <span th:text="${metric.baselineRate != null} ? ${#numbers.formatDecimal(metric.baselineRate * 100, 1, 0)} + '%' : 'n/a'">64%</span>
+                →
+                <span th:text="${metric.candidateRate != null} ? ${#numbers.formatDecimal(metric.candidateRate * 100, 1, 0)} + '%' : 'n/a'">82%</span>
+                <span class="muted"
+                      th:text="'(' + ${metric.baselinePassedCount} + '/' + ${metric.baselineCompletedCount}
+                               + ' → ' + ${metric.candidatePassedCount} + '/' + ${metric.candidateCompletedCount} + ')'">counts</span>
+            </li>
+            <li>
+                <strong>High-severity findings</strong>:
+                <span th:text="${comparison.highSeverityFindings.baselineCount}">8</span> →
+                <span th:text="${comparison.highSeverityFindings.candidateCount}">2</span>
+            </li>
+            <li><strong>Improved test cases</strong>: <span th:text="${comparison.caseChanges.improved}">22</span></li>
+            <li><strong>Regressed test cases</strong>: <span th:text="${comparison.caseChanges.regressed}">4</span></li>
+            <li><strong>Inconclusive test cases</strong>: <span th:text="${comparison.caseChanges.inconclusive}">3</span></li>
+        </ul>
+        <div class="kpi-row">
+            <div class="kpi"><span class="value" th:text="${comparison.caseChanges.improved}">0</span><span class="label">Improved</span></div>
+            <div class="kpi"><span class="value" th:text="${comparison.caseChanges.regressed}">0</span><span class="label">Regressed</span></div>
+            <div class="kpi"><span class="value" th:text="${comparison.caseChanges.unchanged}">0</span><span class="label">Unchanged</span></div>
+            <div class="kpi"><span class="value" th:text="${comparison.caseChanges.inconclusive}">0</span><span class="label">Inconclusive</span></div>
+            <div class="kpi"><span class="value" th:text="${comparison.caseChanges.added}">0</span><span class="label">Added</span></div>
+            <div class="kpi"><span class="value" th:text="${comparison.caseChanges.removed}">0</span><span class="label">Removed</span></div>
+        </div>
+    </section>
+
+    <!-- ============ 4. Test-case changes ============ -->
+    <section id="section-4">
+        <h2>3. Test-case changes</h2>
+        <p class="muted">
+            Matched by external test-case ID. IMPROVED/REGRESSED requires a conclusive PASSED/FAILED
+            outcome on both sides; when either side is INCONCLUSIVE or NOT_EVALUATED the change is
+            reported as INCONCLUSIVE rather than guessed.
+        </p>
+        <table>
+            <thead><tr><th>Test case</th><th>Severity</th><th>Baseline outcome</th><th>Candidate outcome</th><th>Change</th></tr></thead>
+            <tbody>
+            <tr th:each="caseRow : ${comparison.caseChanges.cases}">
+                <td th:text="${caseRow.externalTestCaseId}">id</td>
+                <td><span class="badge" th:classappend="'severity-' + ${caseRow.severity}" th:text="${caseRow.severity}">sev</span></td>
+                <td th:text="${caseRow.baselineOutcome} ?: '—'">outcome</td>
+                <td th:text="${caseRow.candidateOutcome} ?: '—'">outcome</td>
+                <td><span class="badge" th:classappend="'change-' + ${caseRow.change}" th:text="${caseRow.change}">change</span></td>
+            </tr>
+            </tbody>
+        </table>
+    </section>
+
+    <!-- ============ 5. Metric rates ============ -->
+    <section id="section-5">
+        <h2>4. Metric pass rates</h2>
+        <p class="muted">
+            Pass rates are over completed evaluations only; evaluator errors are never in the
+            denominator. An absent rate means the metric had no completed evaluations in that run.
+        </p>
+        <table>
+            <thead><tr><th>Evaluator</th><th>Baseline</th><th>Candidate</th><th>Change</th></tr></thead>
+            <tbody>
+            <tr th:each="metric : ${comparison.metricRates}">
+                <td th:text="${metric.evaluatorKey}">key</td>
+                <td>
+                    <span th:text="${metric.baselineRate != null} ? ${#numbers.formatDecimal(metric.baselineRate * 100, 1, 0)} + '%' : '—'">r</span>
+                    <span class="muted" th:text="'(' + ${metric.baselinePassedCount} + '/' + ${metric.baselineCompletedCount} + ')'">n</span>
+                </td>
+                <td>
+                    <span th:text="${metric.candidateRate != null} ? ${#numbers.formatDecimal(metric.candidateRate * 100, 1, 0)} + '%' : '—'">r</span>
+                    <span class="muted" th:text="'(' + ${metric.candidatePassedCount} + '/' + ${metric.candidateCompletedCount} + ')'">n</span>
+                </td>
+                <td th:text="${metric.delta != null} ? (${metric.delta >= 0} ? '+' : '') + ${#numbers.formatDecimal(metric.delta * 100, 1, 1)} + ' pp' : '—'">d</td>
+            </tr>
+            </tbody>
+        </table>
+    </section>
+
+    <!-- ============ 6. Latency ============ -->
+    <section id="section-6">
+        <h2>5. Latency</h2>
+        <table>
+            <thead><tr><th></th><th>Samples</th><th>Median</th><th>p90</th><th>p95</th><th>Max</th></tr></thead>
+            <tbody>
+            <tr>
+                <th>Baseline</th>
+                <td th:text="${comparison.latency.baseline != null} ? ${comparison.latency.baseline.sampleCount} : '—'">n</td>
+                <td th:text="${comparison.latency.baseline != null} ? ${#numbers.formatDecimal(comparison.latency.baseline.median, 1, 0)} + ' ms' : '—'">m</td>
+                <td th:text="${comparison.latency.baseline != null} ? ${#numbers.formatDecimal(comparison.latency.baseline.p90, 1, 0)} + ' ms' : '—'">p</td>
+                <td th:text="${comparison.latency.baseline != null} ? ${#numbers.formatDecimal(comparison.latency.baseline.p95, 1, 0)} + ' ms' : '—'">p</td>
+                <td th:text="${comparison.latency.baseline != null} ? ${comparison.latency.baseline.maximum} + ' ms' : '—'">x</td>
+            </tr>
+            <tr>
+                <th>Candidate</th>
+                <td th:text="${comparison.latency.candidate != null} ? ${comparison.latency.candidate.sampleCount} : '—'">n</td>
+                <td th:text="${comparison.latency.candidate != null} ? ${#numbers.formatDecimal(comparison.latency.candidate.median, 1, 0)} + ' ms' : '—'">m</td>
+                <td th:text="${comparison.latency.candidate != null} ? ${#numbers.formatDecimal(comparison.latency.candidate.p90, 1, 0)} + ' ms' : '—'">p</td>
+                <td th:text="${comparison.latency.candidate != null} ? ${#numbers.formatDecimal(comparison.latency.candidate.p95, 1, 0)} + ' ms' : '—'">p</td>
+                <td th:text="${comparison.latency.candidate != null} ? ${comparison.latency.candidate.maximum} + ' ms' : '—'">x</td>
+            </tr>
+            </tbody>
+        </table>
+        <p class="muted" th:if="${comparison.candidate.runMode == 'REPLAY' or comparison.baseline.runMode == 'REPLAY'}">
+            At least one run is a REPLAY run: its latencies are the originally captured measurements,
+            not new ones.
+        </p>
+    </section>
+
+    <!-- ============ 7. Evaluator versions ============ -->
+    <section id="section-7">
+        <h2>6. Evaluator versions</h2>
+        <p class="muted">
+            The versions that actually produced each run's results. A comparison across differing
+            evaluator versions is never scientifically clean — every mismatch is repeated in the
+            caveats at the top of this report.
+        </p>
+        <table>
+            <thead><tr><th>Evaluator</th><th>Baseline versions</th><th>Candidate versions</th><th>Match</th></tr></thead>
+            <tbody>
+            <tr th:each="version : ${comparison.evaluatorVersions}">
+                <td th:text="${version.evaluatorKey}">key</td>
+                <td th:text="${version.baselineVersions.isEmpty()} ? '—' : ${#strings.listJoin(version.baselineVersions, '; ')}">v</td>
+                <td th:text="${version.candidateVersions.isEmpty()} ? '—' : ${#strings.listJoin(version.candidateVersions, '; ')}">v</td>
+                <td th:text="${version.matching} ? 'yes' : 'NO'">m</td>
+            </tr>
+            </tbody>
+        </table>
+    </section>
+
+    <footer>
+        Generated by the RAG Evaluation Workbench. This comparison is black-box evidence about two
+        evaluation runs; where the caveats above list evaluator-version or dataset differences, the
+        deltas must not be read as a controlled experiment.
+    </footer>
+</main>
+</body>
+</html>

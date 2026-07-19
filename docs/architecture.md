@@ -839,10 +839,88 @@ the consultant hands over, rendered server-side on demand from the local databas
 rules (spec §23) govern *logs and metrics*, which remain content-free; nothing in the report
 path logs content, and `RunReportService` never touches the log with payloads.
 
+## Phase 7 notes
+
+### Replay rides the existing orchestrator; the "adapter" is a copy step, not an adapter
+
+`POST /api/v1/evaluation-runs/{id}/replay` creates a CREATED REPLAY run (one pending execution
+per terminal source execution, `sourceExecutionId` set) that is then started/cancelled/resumed
+through the exact same state machine and worker as every other run. Unlike imported traces —
+which are genuinely external data served through a real `TargetSystemAdapter` — replay reads
+run-owned `TestExecution` rows, so forcing it through the adapter registry would have meant
+either a fake `TargetSystem` row or special-casing adapter resolution. Instead the worker
+branches per execution: a non-null `sourceExecutionId` routes to
+`RunStateService.copyFromSourceExecution` (copy the captured result, then evaluate as normal)
+and never touches the concurrency limiter or the target. Consequence made explicit in the
+worker: target configuration — including the secret env var — is only resolved when at least
+one pending execution actually needs a live call, so a pure replay run works even after the
+target's credentials are gone.
+
+### Replay copy semantics
+
+Source executions with captured evidence (SUCCEEDED and completed-with-error TIMED_OUT /
+TARGET_ERROR / INVALID_RESPONSE) are replayed; PENDING/RUNNING/CANCELLED sources have nothing to
+re-evaluate and are skipped at replay creation (a source run still CREATED/QUEUED/RUNNING answers
+409). Failed sources keep their failure status/error details in the copy — replay re-judges the
+captured behavior, it never launders a target failure. The captured `latencyMilliseconds` is
+copied (for replayed data the recorded latency *is* the measurement — same rule as imported
+traces); `startedAt`/`completedAt` are the replay's own timestamps. `sourceExecutionId` always
+points at the *original* execution (`source.sourceExecutionId ?? source.id`), so replaying a
+replay references the same originals instead of building a chain — and a source execution deleted
+after replay creation (FK is `ON DELETE SET NULL`) marks the replay execution CANCELLED with a
+reason, never a chatbot failure (CANCELLED executions are excluded from evaluation and every
+denominator). Evaluator keys/configuration default to the source run's and can be overridden in
+the request body — re-judging with updated evaluators is the point of replay; results carry the
+versions that actually judged them (Phase 5 metadata), which is what the comparison's version
+warnings read.
+
+### Comparison reuses RunSummary; classification is deliberately conservative
+
+`RunComparisonService` computes both sides via `RunSummaryService.summarize`, so comparison can
+never drift from the single-run aggregation rules (evaluator errors outside every denominator,
+zero-denominator rates as `null`). Cases are matched by external test-case ID; IMPROVED/REGRESSED
+require a conclusive PASSED/FAILED on *both* sides — any INCONCLUSIVE/NOT_EVALUATED side yields
+INCONCLUSIVE, because an evaluator-infrastructure difference must never be presented as a chatbot
+change (the same never-conflate rule again). Rate deltas exist only when both rates exist — a
+zero-denominator side never produces a fake 0-to-100 jump. "High-severity findings" counts
+persisted findings of severity HIGH/CRITICAL per run (spec §19's own wording), not failed
+test cases — that count already exists separately in each summary.
+
+### Dataset mismatch is an explicit, warned opt-in — not a mapping table
+
+Spec §19 allows "same dataset or explicitly mapped compatible dataset version". No dataset-version
+mapping entity exists (nothing else needs one); "explicitly mapped" is implemented as the
+`allowDatasetMismatch=true` query parameter: without it, differing dataset IDs answer 400 with an
+explanation; with it, cases are matched by externalId and the comparison carries a permanent
+warning that nothing verified the underlying questions are the same. A speculative mapping table
+would have been guessed schema for a workflow the consultant hasn't needed yet.
+
+### Warnings are the §19 honesty mechanism, in API and report alike
+
+`RunComparison.warnings` carries every reason the comparison is not scientifically clean:
+evaluator version/prompt/model differences per key (from persisted metric results, so they
+reflect what actually judged each run), an evaluator producing results in only one run,
+dataset mismatch, non-terminal or failed/interrupted run states, differing repetition counts,
+differing target systems (a cross-system comparison is not a before/after). The HTML report
+(`comparison-report.html`, no JavaScript, same visual language as the run report) renders the
+warnings box *above* every number, and the footer repeats that warned deltas are not a controlled
+experiment. The comparison is still shown — the consultant decides what a caveated comparison is
+worth — but it is never silently clean.
+
+### Demo target gained runtime scenario redirects (demo-only, additive)
+
+To demo/test §19 a target has to *change* between two runs. `DemoTargetService` now holds an
+in-memory redirect map (`PUT/DELETE /demo-target/scenario-redirects`, demo profile only, same
+acceptable-in-memory-state category as the DEMO-014 rotation counter): each entry re-routes one
+scenario to another scenario's behavior, e.g. `DEMO-002 → DEMO-001` makes the wrong-answer
+scenario answer correctly ("the bot was fixed") and the reverse redirect breaks a previously
+correct one. `RunComparisonIntegrationTest` drives exactly that: baseline demo run → redirects →
+candidate run → DEMO-002 IMPROVED, DEMO-001 REGRESSED, DEMO-014 REGRESSED naturally via its
+rotation, DEMO-013 UNCHANGED, zero version warnings, and the HTML report asserted on top.
+
 ## Later phases
 
-To be filled in as Phases 3–8 land (orchestration model, evaluator wrapping decisions actually
-implemented, comparison semantics, etc). Each phase gets its own `## Phase N notes` section above
+To be filled in as Phase 8 lands. Each phase gets its own `## Phase N notes` section above
 this one with the reasoning behind decisions; the Session Log below is the short chronological
 index into that detail.
 
@@ -1251,3 +1329,77 @@ lost context — read both before starting work.
   comparison service + `GET /api/v1/run-comparisons`, the HTML comparison report
   (`GET /reports/comparisons?baselineRunId=..&candidateRunId=..`), and evaluator-version mismatch
   warnings sourced from the per-result evaluator version/prompt metadata persisted since Phase 5.
+
+### Session 7 — 2026-07-19 — Phase 7: Replay and comparison
+
+- Reconciled first: Phase 6 fully checked off; `./mvnw clean verify` re-run before starting —
+  BUILD SUCCESS (exit 0), no Ollama (probed unreachable), Docker running.
+- **Replay (spec §6.4/§21):** `POST /api/v1/evaluation-runs/{id}/replay` creates a CREATED
+  REPLAY run — one pending execution per terminal source execution (SUCCEEDED and
+  completed-with-error; PENDING/RUNNING/CANCELLED have no captured evidence and are skipped),
+  each with `sourceExecutionId` pointing at the *original* captured execution (replaying a replay
+  references the same originals, never a chain). Started via the normal `/start`; the worker
+  branches per execution: a non-null `sourceExecutionId` copies the captured result
+  (`RunStateService.copyFromSourceExecution`) instead of invoking the target — no adapter, no
+  concurrency permit, and target configuration/secrets are only resolved when at least one
+  execution actually needs a live call. Copied failures keep their failure status and error
+  details; captured latency is copied ("the recorded latency is the measurement", same rule as
+  imported traces); a source deleted after replay creation (FK `ON DELETE SET NULL`) yields a
+  CANCELLED replay execution, never a chatbot failure. Evaluator keys/config default to the
+  source run's, overridable in the optional request body (re-judging with updated evaluators is
+  the point). No schema change needed — `source_execution_id` existed since Phase 1. Deliberate
+  touches to passing code (stated per the working agreement): `RunService.validateEvaluatorSelection`
+  refactored to take keys+config instead of the DTO; `RunStateService.PendingExecution` gained
+  `sourceExecutionId`; `RunWorker` resolves the target lazily. Decision *against* a replay
+  `TargetSystemAdapter`: replay reads run-owned executions — forcing it through the adapter
+  registry (keyed by the target's adapter type, which is STANDARD_HTTP for a replayed live run)
+  would have needed fake targets or special-cased resolution; the per-execution branch is smaller
+  and honest (see "Phase 7 notes").
+- **Comparison (spec §19):** new `comparison` module (api + application; `report` now also
+  depends on it — still top-down). `GET /api/v1/run-comparisons?baselineRunId&candidateRunId`
+  returns `RunComparison`: per-case changes matched by external test-case ID
+  (added/removed/improved/regressed/unchanged/inconclusive — IMPROVED/REGRESSED only between two
+  conclusive PASSED/FAILED outcomes; an INCONCLUSIVE/NOT_EVALUATED side is always INCONCLUSIVE,
+  never a claimed change), metric pass rates with their counts and a delta only when both rates
+  exist, high-severity (HIGH/CRITICAL) finding counts, latency percentiles, and per-evaluator
+  version sets. Both sides are computed by `RunSummaryService.summarize`, so comparison can never
+  drift from the single-run denominator rules. Differing datasets answer 400 unless
+  `allowDatasetMismatch=true` (then matched by externalId with a permanent warning) — deliberate
+  decision *against* a dataset-version mapping table (unneeded speculative schema).
+- **Version-mismatch warnings:** distinct evaluator version/prompt/model combinations per key are
+  read from the persisted metric results of each run (what actually judged them, replay included);
+  any mismatch — including an evaluator producing results in only one run — emits an explicit
+  "not scientifically clean" warning. Further warnings: dataset mismatch, non-terminal/failed run
+  states, differing repetition counts, differing target systems.
+- **HTML comparison report:** `GET /reports/comparisons?baselineRunId=..&candidateRunId=..`
+  (`comparison-report.html`, no JavaScript, same visual language as the run report): warnings box
+  above every number, arrow-style executive summary ("required-facts: 64% → 82%" plus
+  high-severity findings and improved/regressed/inconclusive counts per the spec example),
+  case-change table, metric-rate table with counts, latency table (with a REPLAY caveat that its
+  latencies are captured, not new), evaluator-version table.
+- **Demo target (additive):** `PUT/DELETE /demo-target/scenario-redirects` (demo profile only)
+  re-routes one scenario to another's behavior to simulate a changed chatbot between baseline and
+  candidate — in-memory demo state like the DEMO-014 rotation counter.
+- **Tests:** `RunComparisonLogicTest` (6 unit tests: change-classification matrix, external-ID
+  matching with added/removed, null-rate delta rules, version warnings incl. only-in-one-run,
+  no-warning case), `ReplayRunIntegrationTest` (3 ITs: replay produces metric results + findings
+  with the WireMock request count unchanged — the no-target-call proof — plus sourceExecutionId →
+  originals across replay-of-replay, override/validation, and 409s for still-executing/empty
+  sources), `RunComparisonIntegrationTest` (2 ITs: full §19 slice over the demo dataset with
+  deliberately redirected scenarios — DEMO-002 IMPROVED, DEMO-001 REGRESSED, DEMO-014 REGRESSED
+  naturally via rotation, DEMO-013 UNCHANGED, zero version warnings, HTML report asserted
+  script-free; plus identity/dataset-compatibility validation). One suite-only failure caught and
+  fixed: the comparison IT initially shared Spring's cached demo context (and therefore the
+  DEMO-014 rotation counter) with `DemoTargetIntegrationTest` — isolated via a deliberately
+  distinct property value, documented in the test.
+- `./mvnw clean verify`: BUILD SUCCESS, **219/219**, NO Ollama running (probed before the run),
+  Docker running.
+- `git status` after the run: only the expected new/modified files, nothing stray.
+- **Next step:** Phase 8 — hardening. Secret-handling review + authorization-header redaction
+  audit in logs, Actuator health/info/metrics/prometheus + custom Micrometer metrics per §24 (no
+  high-cardinality tags), run deletion endpoint (cascades dependent data — FK cascades from
+  Phase 1 do most of the work; the endpoint and its guard rails are what's missing),
+  response-size limit verification on the adapter path, finishing touches on the centralized
+  `ProblemDetail` handling, OpenAPI/springdoc if Boot-4.1-compatible (else `docs/api.md`), full
+  `README.md` + `.env.example` + `compose.yaml` + `scripts/` + `examples/demo-commands.sh`, and
+  the full §31 end-to-end workflow verification.

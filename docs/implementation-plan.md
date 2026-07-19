@@ -5,14 +5,16 @@ full requirements and `CLAUDE.md` for non-negotiable constraints.
 
 ## Current status
 
-**Last completed phase:** 6 — Review and reports
-**Next phase to run:** 7 — Replay and comparison
-**Build state:** `./mvnw clean verify` green (208/208 tests), verified with NO Ollama running
-(Docker must be running for the Postgres Testcontainers-backed ITs). The human-review workflow
-(pending queue with filters, full review context, append-only decisions with overrides that never
-touch the automated result), editable per-category recommendation templates (migration 013), and
-the 20-section server-rendered HTML report at `GET /reports/runs/{id}` (no JavaScript) are all
-proven end to end by `ReviewAndReportIntegrationTest`. Real-model tests:
+**Last completed phase:** 7 — Replay and comparison
+**Next phase to run:** 8 — Hardening
+**Build state:** `./mvnw clean verify` green (219/219 tests), verified with NO Ollama running
+(Docker must be running for the Postgres Testcontainers-backed ITs). Replay
+(`POST /api/v1/evaluation-runs/{id}/replay` → REPLAY run whose worker copies captured results by
+`sourceExecutionId`, zero target HTTP calls — proven by WireMock request counting in
+`ReplayRunIntegrationTest`) and the §19 baseline-vs-candidate comparison
+(`GET /api/v1/run-comparisons` + the no-JS HTML report at `GET /reports/comparisons`, with
+explicit evaluator-version-mismatch warnings) are proven end to end, the latter by
+`RunComparisonIntegrationTest` over a deliberately changed demo target. Real-model tests:
 `./mvnw clean verify -Pollama-it` (needs Ollama + `OLLAMA_EVALUATOR_MODEL` pulled).
 
 This header is the fast resume pointer — update it as the last step of every session. For the
@@ -204,10 +206,27 @@ as the first item in Phase 3's checklist below.
 
 ## Phase 7 — Replay and comparison
 
-- [ ] Replay runs (evaluate stored executions via `sourceExecutionId`, no live target call)
-- [ ] Baseline vs. candidate comparison service + `GET /api/v1/run-comparisons`
-- [ ] HTML comparison report
-- [ ] Evaluator-version mismatch warnings on comparisons
+- [x] Replay runs (evaluate stored executions via `sourceExecutionId`, no live target call) —
+      `POST /api/v1/evaluation-runs/{id}/replay` creates a CREATED REPLAY run (started via the
+      normal `/start`); the worker copies each captured source result instead of invoking the
+      target (target config/secrets are not even resolved for a pure replay run);
+      `sourceExecutionId` always references the *original* captured execution, so replaying a
+      replay never builds a chain; optional body overrides name / evaluator keys / configuration
+      (defaults inherit the source run); proven by `ReplayRunIntegrationTest` — metric results and
+      findings produced with the WireMock request count unchanged
+- [x] Baseline vs. candidate comparison service + `GET /api/v1/run-comparisons` —
+      `comparison` module; matched by test-case externalId; added/removed/improved/regressed/
+      unchanged/inconclusive (IMPROVED/REGRESSED only between two conclusive outcomes — an
+      INCONCLUSIVE/NOT_EVALUATED side is never sold as a change); per-run stats reused from
+      `RunSummaryService` (same denominators, null rates); metric rates with counts, high-severity
+      finding counts, latency percentiles, evaluator versions; different datasets rejected unless
+      `allowDatasetMismatch=true` (then matched by externalId with an explicit warning)
+- [x] HTML comparison report — `GET /reports/comparisons?baselineRunId=..&candidateRunId=..`
+      (`comparison-report.html`, no JavaScript, arrow-style "64% → 82%" summary, warnings box
+      first)
+- [x] Evaluator-version mismatch warnings — distinct version/prompt/model combinations per
+      evaluator key from persisted metric results; every mismatch (including evaluator present in
+      only one run) yields an explicit "not scientifically clean" warning in both API and report on comparisons
 
 ## Phase 8 — Hardening
 

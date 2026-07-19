@@ -68,13 +68,22 @@ public class RunWorker implements ApplicationListener<ContextClosedEvent> {
             }
             stateService.createPendingExecutionsIfAbsent(runId);
 
-            TargetSystem target = targetSystemRepository
-                    .findById(loadTargetSystemId(runId))
-                    .orElseThrow(() -> new IllegalStateException("Target system vanished for run " + runId));
-            TargetSystemConfiguration configuration = configurationFactory.create(target);
-            TargetSystemAdapter adapter = adapterRegistry.resolve(target.getAdapterType());
-
             List<PendingExecution> pending = stateService.pendingExecutionSnapshots(runId);
+            // Replay executions (sourceExecutionId set) never contact the target, so the target's
+            // configuration — including its secret env var — is only resolved when at least one
+            // execution actually needs a live invocation. A pure replay run must work even if the
+            // target's credentials are no longer available.
+            TargetSystem target = null;
+            TargetSystemConfiguration configuration = null;
+            TargetSystemAdapter adapter = null;
+            if (pending.stream().anyMatch(execution -> execution.sourceExecutionId() == null)) {
+                target = targetSystemRepository
+                        .findById(loadTargetSystemId(runId))
+                        .orElseThrow(() -> new IllegalStateException("Target system vanished for run " + runId));
+                configuration = configurationFactory.create(target);
+                adapter = adapterRegistry.resolve(target.getAdapterType());
+            }
+
             for (PendingExecution execution : pending) {
                 if (shuttingDown) {
                     log.info("Run {}: shutdown in progress, stopping before execution {}", runId, execution.executionId());
@@ -84,7 +93,11 @@ public class RunWorker implements ApplicationListener<ContextClosedEvent> {
                     stateService.cancelRemainingExecutions(runId, "run cancelled");
                     return;
                 }
-                invokeOne(runId, target, configuration, adapter, execution);
+                if (execution.sourceExecutionId() != null) {
+                    replayOne(execution);
+                } else {
+                    invokeOne(runId, target, configuration, adapter, execution);
+                }
             }
             // Spec §15 orchestration: evaluate → classify → aggregate before the run goes
             // terminal. Aggregation itself is computed on demand by the summary endpoint; what
@@ -98,6 +111,13 @@ public class RunWorker implements ApplicationListener<ContextClosedEvent> {
             log.error("Run {}: worker failed unexpectedly", runId, ex);
             stateService.markRunFailedIfRunning(runId, "Worker failed unexpectedly: " + ex.getMessage());
         }
+    }
+
+    /** Replay execution: copy the captured source result and re-run the evaluator pipeline — no target contact. */
+    private void replayOne(PendingExecution execution) {
+        stateService.markExecutionRunning(execution.executionId());
+        stateService.copyFromSourceExecution(execution.executionId());
+        evaluationPipeline.evaluateExecution(execution.executionId());
     }
 
     private void invokeOne(

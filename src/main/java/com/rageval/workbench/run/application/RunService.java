@@ -10,7 +10,9 @@ import com.rageval.workbench.dataset.domain.EvaluationDataset;
 import com.rageval.workbench.dataset.infrastructure.EvaluationDatasetRepository;
 import com.rageval.workbench.dataset.infrastructure.EvaluationTestCaseRepository;
 import com.rageval.workbench.run.api.dto.CreateRunRequest;
+import com.rageval.workbench.run.api.dto.ReplayRunRequest;
 import com.rageval.workbench.run.domain.EvaluationRun;
+import com.rageval.workbench.run.domain.ExecutionStatus;
 import com.rageval.workbench.run.domain.RunMode;
 import com.rageval.workbench.run.domain.RunStatus;
 import com.rageval.workbench.run.domain.TestExecution;
@@ -20,6 +22,7 @@ import com.rageval.workbench.target.domain.AdapterType;
 import com.rageval.workbench.target.domain.TargetSystem;
 import com.rageval.workbench.target.infrastructure.TargetSystemRepository;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.RejectedExecutionException;
 import org.slf4j.Logger;
@@ -106,7 +109,7 @@ public class RunService {
                     "repetitionsPerTestCase must be at least 1",
                     new FieldViolation("repetitionsPerTestCase", "must be at least 1"));
         }
-        validateEvaluatorSelection(request);
+        validateEvaluatorSelection(request.enabledEvaluatorKeys(), request.evaluatorConfiguration());
         EvaluationRun run = new EvaluationRun(
                 target.getId(),
                 dataset.getId(),
@@ -116,6 +119,73 @@ public class RunService {
                 request.enabledEvaluatorKeys() != null ? request.enabledEvaluatorKeys() : List.of(),
                 request.evaluatorConfiguration());
         return runRepository.save(run);
+    }
+
+    /**
+     * Creates a REPLAY run (spec §6.4/§21) from a source run's captured executions: one pending
+     * execution per terminal source execution, each carrying {@code sourceExecutionId}. The worker
+     * later copies the stored invocation result instead of calling the target, so the current
+     * evaluator pipeline re-judges the exact captured responses. Source executions that never
+     * produced target evidence (PENDING/RUNNING/CANCELLED) have nothing to re-evaluate and are
+     * skipped. {@code sourceExecutionId} always references the <em>original</em> captured
+     * execution — replaying a replay does not build a chain.
+     */
+    @Transactional
+    public EvaluationRun replay(UUID sourceRunId, ReplayRunRequest request) {
+        EvaluationRun source = getOrThrow(sourceRunId);
+        if (source.getStatus() == RunStatus.CREATED
+                || source.getStatus() == RunStatus.QUEUED
+                || source.getStatus() == RunStatus.RUNNING) {
+            throw new ConflictException(
+                    "Run " + sourceRunId + " is " + source.getStatus()
+                            + "; only a run that has finished executing can be replayed");
+        }
+        List<TestExecution> replayable = executionRepository.findByEvaluationRunIdAndStatusIn(
+                sourceRunId,
+                List.of(
+                        ExecutionStatus.SUCCEEDED,
+                        ExecutionStatus.TIMED_OUT,
+                        ExecutionStatus.TARGET_ERROR,
+                        ExecutionStatus.INVALID_RESPONSE));
+        if (replayable.isEmpty()) {
+            throw new ConflictException(
+                    "Run " + sourceRunId + " has no completed executions to replay");
+        }
+        List<String> enabledEvaluatorKeys = request != null && request.enabledEvaluatorKeys() != null
+                ? request.enabledEvaluatorKeys()
+                : source.getEnabledEvaluatorKeys();
+        var evaluatorConfiguration = request != null && request.evaluatorConfiguration() != null
+                ? request.evaluatorConfiguration()
+                : source.getEvaluatorConfiguration();
+        validateEvaluatorSelection(enabledEvaluatorKeys, evaluatorConfiguration);
+        String name = request != null && request.name() != null && !request.name().isBlank()
+                ? request.name()
+                : source.getName() + " (replay)";
+        EvaluationRun replayRun = new EvaluationRun(
+                source.getTargetSystemId(),
+                source.getDatasetId(),
+                name,
+                RunMode.REPLAY,
+                source.getRepetitionsPerTestCase(),
+                enabledEvaluatorKeys,
+                evaluatorConfiguration);
+        runRepository.save(replayRun);
+        for (TestExecution sourceExecution : replayable) {
+            UUID originalExecutionId = sourceExecution.getSourceExecutionId() != null
+                    ? sourceExecution.getSourceExecutionId()
+                    : sourceExecution.getId();
+            executionRepository.save(new TestExecution(
+                    replayRun.getId(),
+                    sourceExecution.getTestCaseId(),
+                    originalExecutionId,
+                    sourceExecution.getRepetitionNumber()));
+        }
+        log.info(
+                "Run {}: created replay run {} with {} executions",
+                sourceRunId,
+                replayRun.getId(),
+                replayable.size());
+        return replayRun;
     }
 
     public EvaluationRun start(UUID runId) {
@@ -179,10 +249,11 @@ public class RunService {
     }
 
     /** Fails run creation fast when evaluator keys are unknown or the configuration map is malformed. */
-    private void validateEvaluatorSelection(CreateRunRequest request) {
-        if (request.enabledEvaluatorKeys() != null && !request.enabledEvaluatorKeys().isEmpty()) {
+    private void validateEvaluatorSelection(
+            List<String> enabledEvaluatorKeys, Map<String, Object> evaluatorConfiguration) {
+        if (enabledEvaluatorKeys != null && !enabledEvaluatorKeys.isEmpty()) {
             var known = evaluationPipeline.knownEvaluatorKeys();
-            List<String> unknown = request.enabledEvaluatorKeys().stream()
+            List<String> unknown = enabledEvaluatorKeys.stream()
                     .filter(key -> !known.contains(key))
                     .toList();
             if (!unknown.isEmpty()) {
@@ -194,7 +265,7 @@ public class RunService {
             }
         }
         try {
-            evaluationPipeline.validateEvaluatorConfiguration(request.evaluatorConfiguration());
+            evaluationPipeline.validateEvaluatorConfiguration(evaluatorConfiguration);
         } catch (IllegalArgumentException ex) {
             throw new ValidationException(
                     "Invalid evaluatorConfiguration: " + ex.getMessage(),

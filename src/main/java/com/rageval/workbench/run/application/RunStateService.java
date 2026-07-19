@@ -49,10 +49,15 @@ public class RunStateService {
         this.testCaseRepository = testCaseRepository;
     }
 
-    /** A read-only snapshot of one pending execution plus the test-case data needed to invoke the target. */
+    /**
+     * A read-only snapshot of one pending execution plus the test-case data needed to invoke the
+     * target. A non-null {@code sourceExecutionId} marks a replay execution: the worker copies the
+     * captured source result instead of invoking the target.
+     */
     public record PendingExecution(
             UUID executionId,
             UUID testCaseId,
+            UUID sourceExecutionId,
             String externalTestCaseId,
             String question,
             Map<String, Object> userContext) {
@@ -149,6 +154,7 @@ public class RunStateService {
                     return new PendingExecution(
                             execution.getId(),
                             execution.getTestCaseId(),
+                            execution.getSourceExecutionId(),
                             testCase != null ? testCase.getExternalId() : null,
                             testCase != null ? testCase.getQuestion() : null,
                             testCase != null ? testCase.getUserContext() : null);
@@ -199,6 +205,56 @@ public class RunStateService {
                     result.errorMessage(),
                     result.httpStatus(),
                     result.attemptCount(),
+                    execution.getStartedAt(),
+                    completedAt);
+        }
+    }
+
+    /**
+     * Replay path: copies the captured invocation result of the source execution onto this replay
+     * execution — answer, citations, chunks, raw response, latency, tokens, HTTP status, attempt
+     * count, and for failed sources the original failure status and error details. The captured
+     * latency is the measurement; only {@code startedAt}/{@code completedAt} reflect the replay
+     * itself. A vanished source (deleted since the replay run was created) marks the execution
+     * CANCELLED — the source's absence is a workbench data gap, never a chatbot failure.
+     */
+    @Transactional
+    public void copyFromSourceExecution(UUID executionId) {
+        TestExecution execution = loadExecution(executionId);
+        UUID sourceExecutionId = execution.getSourceExecutionId();
+        TestExecution source = sourceExecutionId != null
+                ? executionRepository.findById(sourceExecutionId).orElse(null)
+                : null;
+        if (source == null) {
+            execution.markCancelled(
+                    "source execution " + sourceExecutionId + " no longer exists; nothing to re-evaluate");
+            return;
+        }
+        Instant completedAt = Instant.now();
+        if (source.getStatus() == ExecutionStatus.SUCCEEDED) {
+            execution.recordSuccess(
+                    source.getRequestPayload(),
+                    source.getAnswer(),
+                    source.getRawResponse(),
+                    source.getCitations(),
+                    source.getRetrievedChunks(),
+                    source.getTargetModel(),
+                    source.getLatencyMilliseconds() != null ? source.getLatencyMilliseconds() : 0L,
+                    source.getInputTokens(),
+                    source.getOutputTokens(),
+                    source.getHttpStatus(),
+                    source.getAttemptCount(),
+                    execution.getStartedAt(),
+                    completedAt);
+        } else {
+            execution.recordFailure(
+                    source.getStatus(),
+                    source.getRequestPayload(),
+                    source.getRawResponse(),
+                    source.getErrorType(),
+                    source.getErrorMessage(),
+                    source.getHttpStatus(),
+                    source.getAttemptCount(),
                     execution.getStartedAt(),
                     completedAt);
         }
