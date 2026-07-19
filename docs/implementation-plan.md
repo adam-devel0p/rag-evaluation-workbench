@@ -5,17 +5,17 @@ full requirements and `CLAUDE.md` for non-negotiable constraints.
 
 ## Current status
 
-**Last completed phase:** 7 — Replay and comparison
-**Next phase to run:** 8 — Hardening
-**Build state:** `./mvnw clean verify` green (219/219 tests), verified with NO Ollama running
-(Docker must be running for the Postgres Testcontainers-backed ITs). Replay
-(`POST /api/v1/evaluation-runs/{id}/replay` → REPLAY run whose worker copies captured results by
-`sourceExecutionId`, zero target HTTP calls — proven by WireMock request counting in
-`ReplayRunIntegrationTest`) and the §19 baseline-vs-candidate comparison
-(`GET /api/v1/run-comparisons` + the no-JS HTML report at `GET /reports/comparisons`, with
-explicit evaluator-version-mismatch warnings) are proven end to end, the latter by
-`RunComparisonIntegrationTest` over a deliberately changed demo target. Real-model tests:
-`./mvnw clean verify -Pollama-it` (needs Ollama + `OLLAMA_EVALUATOR_MODEL` pulled).
+**Last completed phase:** 8 (MVP complete)
+**Next phase to run:** none — see deferred features in the Session 8 log
+(`docs/architecture.md`)
+**Build state:** `./mvnw clean verify` green (229/229 tests), verified with NO Ollama running
+(Docker must be running for the Postgres Testcontainers-backed ITs). The full spec §31 demo
+workflow was executed for real against the running app under the `local,demo` profiles
+(`examples/demo-commands.sh`, exit 0): import → mark-ready → target → connection test → run
+(2 repetitions) → PARTIALLY_COMPLETED (one scenario deliberately answers HTTP 500) → summary →
+HTML report → human review → replay (zero live target calls) → comparison JSON + HTML → run
+deletion. LLM evaluators additionally proven against a real local `llama3.2:3b` (72 COMPLETED
+`llm-*` metric results in a live run, plus the `-Pollama-it` suite — see Session 8 log).
 
 This header is the fast resume pointer — update it as the last step of every session. For the
 full history and reasoning behind each session's decisions, see "Session Log" in

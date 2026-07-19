@@ -10,6 +10,11 @@
 # nothing. Without Ollama the LLM evaluator metrics simply report FAILED (evaluator failure,
 # never a chatbot failure) and everything else — including the report — still works.
 #
+# Timing note: with Ollama up, all eight LLM judges run per execution. On CPU-only machines a
+# small model still needs minutes per execution — a full 2-repetition demo run can exceed an
+# hour. For a quick demo of the workflow itself, run with Ollama stopped (fast, deterministic
+# verdicts + FAILED LLM metrics) and replay the run later with Ollama up.
+#
 # jq is used only if installed (pretty-printing and ID extraction). Without jq the script still
 # runs: IDs are extracted with a python3 fallback, and raw JSON is printed instead of pretty JSON.
 set -euo pipefail
@@ -40,9 +45,17 @@ show() {
 
 echo
 echo "== 0. Check the workbench is up =="
-curl -fsS "${BASE_URL}/actuator/health" > /dev/null \
-    || { echo "ERROR: workbench not reachable at ${BASE_URL} — start it first (see header)." >&2; exit 1; }
-echo "OK"
+# /actuator/health answers 503 (aggregate DOWN) when Ollama is unreachable even though the
+# workbench itself is fully functional — accept both 200 and 503 as "up".
+HEALTH_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "${BASE_URL}/actuator/health" || true)
+case "${HEALTH_CODE}" in
+    200) echo "OK (health UP)" ;;
+    503) echo "OK (app up; health reports DOWN — usually Ollama unreachable; LLM metrics will be FAILED)" ;;
+    *)
+        echo "ERROR: workbench not reachable at ${BASE_URL} — start it first (see header)." >&2
+        exit 1
+        ;;
+esac
 
 echo
 echo "== 1. Import the sample dataset (spec §31 step 1) =="

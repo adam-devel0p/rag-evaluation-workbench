@@ -95,13 +95,32 @@ also be overridden per run via `evaluatorConfiguration`.
 
 ```bash
 ./mvnw clean verify              # full build + tests; needs Docker, passes with NO Ollama running
-./mvnw clean verify -Pollama-it  # additionally runs the *OllamaIT real-model tests
-                                 #   (needs Ollama running + OLLAMA_EVALUATOR_MODEL pulled)
+./mvnw clean verify -Pollama-it  # additionally runs the *OllamaIT real-model tests (see below)
 ./mvnw test -Dtest=HardeningIntegrationTest   # a single test class
 ```
 
 The default `verify` never touches a real model — LLM evaluators are tested against a
-deterministic fake `JudgeClient`, and PostgreSQL integration tests run through Testcontainers.
+deterministic fake `JudgeClient`. What it exercises:
+
+| Aspect | Where | Needs |
+|---|---|---|
+| Evaluator logic: fact/claim matching, regex validation, refusal phrases, Hit@K, reciprocal rank, percentiles, aggregation denominators, failure-classification rules, run state transitions, comparison verdicts, template substitution, JSON-pointer extraction, secret/header redaction | plain unit tests throughout `src/test/java` | nothing |
+| Liquibase migrations, JSONB persistence, dataset import, target CRUD, run execution, human review, report rendering, replay, comparison, deletion | `*IntegrationTest` classes against real PostgreSQL (Testcontainers) | Docker |
+| HTTP adapter: nested pointers, empty/invalid/oversized responses, timeouts, retryable vs. non-retryable statuses, auth-header injection without logging | [StandardHttpTargetSystemAdapterWireMockTest](src/test/java/com/rageval/workbench/target/infrastructure/StandardHttpTargetSystemAdapterWireMockTest.java) | nothing |
+| Module dependency direction, controllers free of business logic/repositories/entities | [ArchitectureTest](src/test/java/com/rageval/workbench/common/ArchitectureTest.java) (ArchUnit) | nothing |
+
+### Optional real-model tests (`-Pollama-it`)
+
+[LlmJudgeOllamaIT](src/test/java/com/rageval/workbench/evaluation/llm/LlmJudgeOllamaIT.java)
+checks that the real judge model answers the structured schema, and computes the judge-vs-human
+agreement report over the labelled examples in `src/test/resources/calibration/`. Prerequisites,
+then the command:
+
+```bash
+docker compose up -d ollama
+./scripts/pull-models.sh         # honors OLLAMA_EVALUATOR_MODEL / OLLAMA_BASE_URL
+./mvnw clean verify -Pollama-it
+```
 
 ## Complete evaluation workflow (demo profile)
 
@@ -249,6 +268,52 @@ version/prompt/model mismatches produce explicit "not scientifically clean" warn
 number. To simulate a changed chatbot in the demo:
 `curl -s -X PUT $BASE/demo-target/scenario-redirects -H 'Content-Type: application/json' -d '{"DEMO-002": "DEMO-001"}'`,
 then run a second live run as the candidate.
+
+### Evaluating offline logs (imported traces)
+
+When the chatbot cannot be called live, import previously captured interactions instead. First
+create a target with `"adapterType": "IMPORTED_TRACE"` (no endpoint or pointers needed):
+
+```bash
+TRACE_TARGET_ID=$(curl -s -X POST $BASE/api/v1/targets -H 'Content-Type: application/json' -d '{
+  "name": "Production chatbot (offline logs)",
+  "adapterType": "IMPORTED_TRACE",
+  "enabled": true,
+  "timeoutMilliseconds": 5000,
+  "connectTimeoutMilliseconds": 2000,
+  "maximumConcurrency": 1,
+  "authenticationType": "NONE"
+}' | jq -r .id)
+```
+
+Then import the traces — each `externalTestCaseId` must exist in the dataset; validation is
+all-or-nothing with row-level errors:
+
+```bash
+curl -s -X POST $BASE/api/v1/imported-traces -H 'Content-Type: application/json' -d '{
+  "targetSystemId": "'$TRACE_TARGET_ID'",
+  "datasetId": "'$DATASET_ID'",
+  "runName": "Production logs 2026-07",
+  "traces": [
+    {
+      "externalTestCaseId": "DEMO-001",
+      "repetitionNumber": 1,
+      "question": "Which Java version does the payments service require?",
+      "answer": "The payments service requires Java 21.",
+      "citations": [],
+      "retrievedChunks": [],
+      "targetModel": "prod-model",
+      "latencyMilliseconds": 850,
+      "metadata": {}
+    }
+  ]
+}' | jq
+```
+
+The import creates a REPLAY-mode run in `CREATED` state; start and inspect it exactly like any
+other run (`POST /api/v1/evaluation-runs/{id}/start`, then steps 6–8 above). A CSV variant for
+the basic fields exists at `POST /api/v1/imported-traces/csv` (multipart `file` upload plus
+`targetSystemId`, `datasetId`, `runName` request parameters).
 
 ### Deleting a run
 

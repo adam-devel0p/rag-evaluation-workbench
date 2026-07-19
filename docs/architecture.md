@@ -1505,3 +1505,73 @@ lost context — read both before starting work.
   `ProblemDetail` handling, OpenAPI/springdoc if Boot-4.1-compatible (else `docs/api.md`), full
   `README.md` + `.env.example` + `compose.yaml` + `scripts/` + `examples/demo-commands.sh`, and
   the full §31 end-to-end workflow verification.
+
+### Session 8 — 2026-07-19 — Phase 8: Hardening + final verification ⭐ MVP complete
+
+- Reconciled first: Phase 7 fully checked off; `./mvnw clean verify` re-run before starting —
+  BUILD SUCCESS, 219/219, no Ollama (probed), Docker running.
+- **Security/logging review:** full-codebase grep audit — content appears in exactly two log
+  paths, both behind the new dev-only opt-in `rag-evaluation.logging.verbose-content`
+  (`ContentLoggingProperties`, loud startup WARN when enabled). Secret values still exist only in
+  the transient per-call `TargetSystemConfiguration`; the Phase 2 WireMock redaction test keeps
+  guarding the auth-header path. Spring AI observation export re-verified disabled against the
+  resolved 2.0.0 `ChatObservationProperties` bytecode (`logPrompt`/`logCompletion` primitive
+  false).
+- **Observability (§24):** `common.observability.WorkbenchMetrics` owns every meter + the
+  bounded-tag policy (outcome/status names, evaluator keys, exception class names — never IDs or
+  content); wired from `RunWorker` (live invocations only), `RunStateService` (terminal
+  executions/runs), `EvaluationService`, `OllamaJudgeClient`; review-backlog gauge registered
+  from the review module. MDC context (`runId`/`executionId`/`targetSystemId`/`evaluatorKey` +
+  Phase 2's `correlationId`) rendered by a console pattern. Actuator
+  health/info/metrics/prometheus exposed.
+- **Deletion + storage config (§23):** `DELETE /api/v1/evaluation-runs/{id}` (409 while
+  QUEUED/RUNNING) cascades everything via the Phase 1 FK design;
+  `rag-evaluation.storage.store-raw-responses`/`store-retrieved-chunk-content` enforced at the
+  `RunStateService` choke point. `application-local.properties` = compose datasource +
+  `server.address=127.0.0.1` (the documented local-only mode).
+- **Error handling:** three new ProblemDetail handlers (malformed UUID, missing query parameter,
+  method-parameter validation) — all were 500s before.
+- **OpenAPI (§29), verified for real:** springdoc 2.8.x is the Boot-3 line; **3.0.3** is the
+  Boot-4 line (parent POM builds against Boot 4.0.5 — checked on Central). Empirically verified
+  on Boot 4.1.0 by the full suite + a live `/v3/api-docs` assertion. It cost one real regression:
+  swagger-core's Jackson 2 databind flipped Hibernate's JSONB mapper auto-detection and broke 30
+  tests — fixed by pinning `hibernate.type.json_format_mapper=jackson3`. Full notes in
+  `docs/api.md`.
+- **ArchUnit (§28.5):** three rules; the controllers↛repositories rule flushed out two real
+  violations (`FindingController`, `RunEvaluationController`) — extracted
+  `FindingQueryService`/`MetricResultQueryService` (stated touch, behavior identical). The
+  entity-return rule is generic-aware (`getAllInvolvedRawTypes`).
+- **Packaging:** `compose.yaml` (postgres 17 + ollama, named volumes, health checks, loopback
+  ports), `scripts/pull-models.sh` / `start-local.sh` / `reset-local-data.sh`, `.env.example`,
+  `examples/demo-commands.sh` (§31, jq behind an installed-check with python3 fallback);
+  `docs/data-handling.md` rewritten to describe actual behavior; full `README.md` (§30);
+  `docs/api.md`.
+- **Live verification (every README/§31 command actually run):** compose up healthy → model
+  pulled via script (plus unreachable-Ollama and already-pulled paths tested) → app started
+  under `local,demo`, bound to 127.0.0.1 only (netstat-verified) → actuator
+  health/info/metrics/prometheus, swagger-ui, ProblemDetail 400s with correlation IDs all
+  checked against the running instance → `examples/demo-commands.sh` end to end (exit 0):
+  import → mark-ready → target → connection test → run → PARTIALLY_COMPLETED (expected) →
+  summary → HTML report (152 KB, script-free) → human review submitted → replay with zero live
+  calls → comparison JSON + HTML → run deletion (204). Live degradation check: with Ollama
+  stopped, 129 LLM metric results FAILED and all flagged for review, deterministic verdicts
+  unaffected. Live real-model check: with Ollama up, a run produced 72 COMPLETED `llm-*` results
+  from `llama3.2:3b`, and `-Pollama-it` passed (2/2, incl. the calibration agreement report).
+- **Bugs the live verification caught (all fixed):** demo script's poll budget was far too short
+  for CPU-only LLM judging (now 30 min + hard stop with guidance instead of running on into
+  409s); the script's up-check treated the documented Ollama-down 503 health aggregate as "app
+  not running" (now accepts 200/503); `LlmJudgeOllamaIT`'s hand-built client had no Spring
+  context, so production's no-retry/timeout settings didn't apply — a slow CPU judge call hit
+  the default read timeout × Spring AI's default 10-retry template (24-minute hang); the IT now
+  mirrors production (10-minute read timeout, zero retries).
+- **Final build:** `./mvnw clean verify` — BUILD SUCCESS, **229/229**, NO Ollama (probed before
+  the run), Docker running. Boot-test note: `@AutoConfigureMetrics` moved to
+  `org.springframework.boot.micrometer.metrics.test.autoconfigure` in Boot 4.1 (needed to test
+  the real Prometheus endpoint).
+- **Genuinely deferred beyond the MVP:** authentication/multi-user access control; automatic
+  data retention/expiry policies; embedding-based SEMANTIC fact matching; a dataset-version
+  mapping entity for cross-dataset comparison (explicit `allowDatasetMismatch` warning instead);
+  durable (out-of-memory) run queue; per-target concurrency changes applying without restart;
+  PDF export; trend analysis across more than two runs; MISSING_DOCUMENTATION /
+  OUTDATED_DOCUMENT as machine-decided primary categories (black-box data cannot prove them —
+  they stay named alternatives requiring human confirmation).

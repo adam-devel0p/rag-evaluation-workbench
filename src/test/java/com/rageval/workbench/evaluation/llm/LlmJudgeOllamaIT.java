@@ -48,9 +48,22 @@ class LlmJudgeOllamaIT {
     static void createJudge() {
         String baseUrl = System.getenv().getOrDefault("OLLAMA_BASE_URL", "http://localhost:11434");
         String model = System.getenv().getOrDefault("OLLAMA_EVALUATOR_MODEL", "llama3.2:3b");
-        OllamaApi api = OllamaApi.builder().baseUrl(baseUrl).build();
+        // Hand-built client (no Spring context), so the production application.properties don't
+        // apply here: without these, the default HTTP client's read timeout is far too short for
+        // a CPU-only judge call (minutes, not seconds), and Spring AI's default retry template
+        // then multiplies the hang. Mirror production: generous read timeout, zero retries.
+        org.springframework.http.client.JdkClientHttpRequestFactory requestFactory =
+                new org.springframework.http.client.JdkClientHttpRequestFactory();
+        requestFactory.setReadTimeout(java.time.Duration.ofMinutes(10));
+        OllamaApi api = OllamaApi.builder()
+                .baseUrl(baseUrl)
+                .restClientBuilder(org.springframework.web.client.RestClient.builder()
+                        .requestFactory(requestFactory))
+                .build();
+        org.springframework.core.retry.RetryTemplate noRetry = new org.springframework.core.retry.RetryTemplate(
+                org.springframework.core.retry.RetryPolicy.builder().maxRetries(0).build());
         judge = new OllamaJudgeClient(
-                OllamaChatModel.builder().ollamaApi(api).build(),
+                OllamaChatModel.builder().ollamaApi(api).retryTemplate(noRetry).build(),
                 new LlmProperties(model, 0.0, 2),
                 new WorkbenchMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()),
                 new ContentLoggingProperties());
