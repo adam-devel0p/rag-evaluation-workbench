@@ -1,6 +1,7 @@
 package com.rageval.workbench.evaluation.application;
 
 import com.rageval.workbench.common.error.NotFoundException;
+import com.rageval.workbench.common.observability.WorkbenchMetrics;
 import com.rageval.workbench.dataset.domain.EvaluationTestCase;
 import com.rageval.workbench.dataset.infrastructure.EvaluationTestCaseRepository;
 import com.rageval.workbench.evaluation.domain.EvaluationApplicability;
@@ -17,6 +18,7 @@ import com.rageval.workbench.run.domain.ExecutionStatus;
 import com.rageval.workbench.run.domain.TestExecution;
 import com.rageval.workbench.run.infrastructure.EvaluationRunRepository;
 import com.rageval.workbench.run.infrastructure.TestExecutionRepository;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.EnumSet;
@@ -28,6 +30,7 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -62,6 +65,7 @@ public class EvaluationService {
     private final EvaluationRunRepository runRepository;
     private final TestExecutionRepository executionRepository;
     private final EvaluationTestCaseRepository testCaseRepository;
+    private final WorkbenchMetrics metrics;
 
     public EvaluationService(
             List<EvaluationStrategy> strategies,
@@ -70,7 +74,8 @@ public class EvaluationService {
             EvaluationMetricResultRepository metricResultRepository,
             EvaluationRunRepository runRepository,
             TestExecutionRepository executionRepository,
-            EvaluationTestCaseRepository testCaseRepository) {
+            EvaluationTestCaseRepository testCaseRepository,
+            WorkbenchMetrics metrics) {
         this.strategies = strategies.stream()
                 .sorted(Comparator.comparing(EvaluationStrategy::key))
                 .toList();
@@ -80,6 +85,7 @@ public class EvaluationService {
         this.runRepository = runRepository;
         this.executionRepository = executionRepository;
         this.testCaseRepository = testCaseRepository;
+        this.metrics = metrics;
     }
 
     /** The keys of all registered evaluation strategies, for validating a run's enabled-evaluator list. */
@@ -161,6 +167,22 @@ public class EvaluationService {
     }
 
     private EvaluationMetricResult runOne(EvaluationStrategy strategy, EvaluationContext context) {
+        MDC.put("evaluatorKey", strategy.key());
+        try {
+            EvaluationMetricResult result = runOneInContext(strategy, context);
+            metrics.recordEvaluatorExecution(
+                    strategy.key(),
+                    result.getStatus().name(),
+                    Duration.ofMillis(result.getDurationMilliseconds() != null
+                            ? result.getDurationMilliseconds()
+                            : 0L));
+            return result;
+        } finally {
+            MDC.remove("evaluatorKey");
+        }
+    }
+
+    private EvaluationMetricResult runOneInContext(EvaluationStrategy strategy, EvaluationContext context) {
         long start = System.nanoTime();
         try {
             EvaluationApplicability applicability = strategy.applicability(context);

@@ -230,15 +230,45 @@ as the first item in Phase 3's checklist below.
 
 ## Phase 8 — Hardening
 
-- [ ] Secret handling review, authorization header redaction in logs
-- [ ] Observability: Actuator health/info/metrics/prometheus, custom Micrometer metrics (§24),
-      no high-cardinality tags
-- [ ] Run deletion endpoint/service (cascades dependent data)
-- [ ] Response-size limits enforced on target adapter
-- [ ] Centralized `ProblemDetail` exception handling with correlation IDs
-- [ ] OpenAPI/springdoc if a Spring Boot 4.1-compatible version exists; otherwise `docs/api.md`
-- [ ] Full `README.md`, `.env.example`, `compose.yaml`, `scripts/*.sh`, `examples/demo-commands.sh`
-- [ ] Full end-to-end verification against the workflow in spec §31
+- [x] Secret handling review, authorization header redaction in logs — full-codebase grep audit:
+      only the two `ContentLoggingProperties`-guarded verbose paths touch content; secret values
+      exist only in the transient per-call `TargetSystemConfiguration` (WireMock redaction test
+      still guards the header path); dev-only opt-in `rag-evaluation.logging.verbose-content`
+      added with a startup WARN when enabled
+- [x] Observability: Actuator health/info/metrics/prometheus exposed; all §24 metrics via
+      `common.observability.WorkbenchMetrics` (single owner of the tag policy — bounded tag
+      values only, no IDs/content), review-backlog gauge from the review module; MDC-structured
+      logs (`correlationId`/`runId`/`executionId`/`targetSystemId`/`evaluatorKey`) rendered by
+      the console pattern; Spring AI prompt/completion observation export re-verified disabled
+      against the resolved 2.0.0 `ChatObservationProperties` bytecode
+- [x] Run deletion endpoint/service — `DELETE /api/v1/evaluation-runs/{id}`, 409 while
+      QUEUED/RUNNING, cascades executions/metrics/reviews/findings/imported traces via the
+      Phase 1 FK design (`HardeningIntegrationTest`)
+- [x] Response-size limits enforced on target adapter (bounded streaming since Phase 2;
+      re-verified — `RESPONSE_TOO_LARGE` WireMock test still locks it in)
+- [x] Configurable raw-response/chunk-content storage (`rag-evaluation.storage.*`) applied at the
+      `RunStateService` choke point (`StorageConfigurationIntegrationTest`); local-only mode
+      documented (`local` profile binds 127.0.0.1, compose publishes on loopback)
+- [x] Centralized `ProblemDetail` exception handling with correlation IDs — extended with
+      handlers for malformed UUIDs, missing query parameters, and method-parameter validation
+      (all were 500s before)
+- [x] OpenAPI via springdoc **3.0.3** — Boot-4 line verified for real (2.8.x is Boot 3; 3.0.3
+      parent POM builds against Boot 4.0.5; empirically proven on 4.1.0 by the suite + a live
+      `/v3/api-docs` assertion). Cost: springdoc drags in Jackson 2 databind, which flipped
+      Hibernate's JSONB mapper — pinned back with
+      `hibernate.type.json_format_mapper=jackson3`. `docs/api.md` written anyway (endpoint
+      overview + full cURL walkthrough + the compatibility notes)
+- [x] ArchUnit tests (spec §28.5): controllers ↛ repositories (required extracting
+      `FindingQueryService`/`MetricResultQueryService` — two Phase 4/6 controllers violated it),
+      domain ↛ api, no controller returns a JPA entity (generic-aware)
+- [x] Full `README.md` (§30), `.env.example`, `compose.yaml` (named volumes + health checks,
+      loopback ports), `scripts/pull-models.sh` (env-driven model, clear failure when Ollama
+      down, skips when already pulled), `scripts/start-local.sh`, `scripts/reset-local-data.sh`
+      (confirmation-gated), `examples/demo-commands.sh` (full §31 workflow, jq behind an
+      installed-check with python3 fallback); `docs/data-handling.md` rewritten for what the
+      code actually does
+- [x] Full end-to-end verification against the workflow in spec §31 (compose up → app under
+      local,demo → `examples/demo-commands.sh` run for real — see Session 8 log)
 
 ## Notes
 

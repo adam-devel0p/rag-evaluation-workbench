@@ -3,6 +3,7 @@ package com.rageval.workbench.target.infrastructure;
 import com.rageval.workbench.common.json.JsonPointerExtractor;
 import com.rageval.workbench.common.json.PlaceholderValues;
 import com.rageval.workbench.common.json.RequestTemplateSubstitutor;
+import com.rageval.workbench.configuration.ContentLoggingProperties;
 import com.rageval.workbench.configuration.TargetProperties;
 import com.rageval.workbench.run.domain.Citation;
 import com.rageval.workbench.run.domain.RetrievedChunk;
@@ -66,16 +67,19 @@ public class StandardHttpTargetSystemAdapter implements TargetSystemAdapter {
     private final RequestTemplateSubstitutor requestTemplateSubstitutor;
     private final JsonPointerExtractor jsonPointerExtractor;
     private final TargetProperties targetProperties;
+    private final ContentLoggingProperties contentLogging;
 
     public StandardHttpTargetSystemAdapter(
             JsonMapper jsonMapper,
             RequestTemplateSubstitutor requestTemplateSubstitutor,
             JsonPointerExtractor jsonPointerExtractor,
-            TargetProperties targetProperties) {
+            TargetProperties targetProperties,
+            ContentLoggingProperties contentLogging) {
         this.jsonMapper = jsonMapper;
         this.requestTemplateSubstitutor = requestTemplateSubstitutor;
         this.jsonPointerExtractor = jsonPointerExtractor;
         this.targetProperties = targetProperties;
+        this.contentLogging = contentLogging;
     }
 
     @Override
@@ -134,6 +138,16 @@ public class StandardHttpTargetSystemAdapter implements TargetSystemAdapter {
             log.debug(
                     "target invocation attempt targetSystemId={} httpStatus={} latencyMs={} bodyBytes={}",
                     configuration.targetSystemId(), raw.status(), latencyMillis, raw.body().length);
+            // Dev-only opt-in (spec §23): payloads contain client content and are never logged
+            // unless rag-evaluation.logging.verbose-content is explicitly enabled. The request
+            // body is logged as substituted JSON — authorization headers are not part of it and
+            // are never logged on any path.
+            if (contentLogging.isVerboseContent() && log.isDebugEnabled()) {
+                log.debug(
+                        "target request body: {}\ntarget response body: {}",
+                        new String(bodyBytes, java.nio.charset.StandardCharsets.UTF_8),
+                        new String(raw.body(), java.nio.charset.StandardCharsets.UTF_8));
+            }
             return interpret(raw, configuration, latencyMillis);
         } catch (ResourceAccessException ex) {
             long latencyMillis = elapsedMillis(startNanos);

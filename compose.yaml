@@ -1,0 +1,40 @@
+# Local infrastructure for the RAG Evaluation Workbench: PostgreSQL (persistence) and Ollama
+# (local evaluator models). The application itself runs on the host via
+# `./mvnw spring-boot:run -Dspring-boot.run.profiles=local,demo` — it is deliberately NOT part of
+# this compose file (spec §26). Ports bind to 127.0.0.1: this is a local-first workbench holding
+# potentially confidential client data (see docs/data-handling.md).
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: rageval-postgres
+    environment:
+      POSTGRES_DB: rageval
+      POSTGRES_USER: rageval
+      POSTGRES_PASSWORD: rageval
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - rageval-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rageval -d rageval"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: rageval-ollama
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - rageval-ollama-models:/root/.ollama
+    healthcheck:
+      # The ollama image has no curl/wget; the CLI itself answers only when the server is up.
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  rageval-postgres-data:
+  rageval-ollama-models:

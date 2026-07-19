@@ -1,113 +1,146 @@
 # Data Handling and Privacy
 
-This document describes data-handling behavior that is actually implemented in the running code,
-not aspirational policy. It is rewritten (not appended to) as each phase changes what is true. See
-`CLAUDE.md` and `docs/spec.md` §23 for the binding requirements.
+This document describes data-handling behavior that is **actually implemented in the running
+code** as of Phase 8 (MVP complete) — not aspirational policy. Every claim below is implemented
+and most are locked in by tests. It is written for the consultant who must explain to a client
+where their data goes. See `CLAUDE.md` and `docs/spec.md` §23 for the binding requirements.
 
-## What is logged today
+All target data — questions, answers, citations, retrieved chunks, raw responses — is treated as
+potentially confidential client data.
 
-The target adapter (`StandardHttpTargetSystemAdapter`) logs one `DEBUG`-level line per invocation
-attempt:
+## Where data lives
 
-```
-target invocation attempt targetSystemId=<uuid> httpStatus=<int> latencyMs=<long> bodyBytes=<int>
-```
+Everything is stored in the local PostgreSQL instance you run (Docker Compose named volume
+`rageval-postgres-data`). There is no cloud storage, no telemetry, no external reporting. HTML
+reports are rendered server-side on demand from that database and are not written to disk.
 
-or, on a transport failure:
+## No external LLM calls
 
-```
-target invocation attempt targetSystemId=<uuid> failed after latencyMs=<long>: <exception class name>
-```
+Client content (questions, chatbot answers, retrieved-chunk content, reference answers, expected
+facts) is sent to exactly one model integration: the locally running **Ollama** server at
+`spring.ai.ollama.base-url` (`OLLAMA_BASE_URL`, default `http://localhost:11434`). No external or
+paid LLM API is on the classpath or configured — the only Spring AI model starter in `pom.xml` is
+`spring-ai-starter-model-ollama`, and `OllamaJudgeClient` is the single code path that sends
+content to a model. The only other outbound HTTP client is the target adapter calling the chatbot
+you explicitly configured.
 
-This is identifiers and sizes only — never the question, the answer, citations, retrieved-chunk
-content, request/response bodies, or header values. There is no verbose-content logging opt-in
-yet; one will be added (dev-profile-gated) alongside Phase 3's run execution, which is where full
-prompts/answers first exist in a persisted, run-scoped context worth optionally inspecting.
+Spring AI's prompt/completion observation export **stays disabled**:
+`spring.ai.chat.observations.log-prompt=false` and
+`spring.ai.chat.observations.log-completion=false` are pinned in `application.properties` (they
+are also the Spring AI 2.0.0 defaults — property names and `false` defaults re-verified in
+Phase 8 against the resolved `ChatObservationProperties` bytecode), so enabling content export
+requires an explicit, visible opt-in in configuration review.
 
-`CorrelationIdFilter` assigns a correlation ID to every HTTP request (reusing an inbound
-`X-Correlation-Id` header if present) and puts it in the SLF4J MDC for the duration of the request,
-so any log line emitted while handling a request can be tied back to it. `GlobalExceptionHandler`
-echoes the same ID back in every `ProblemDetail` response as a `correlationId` extension property.
+## Logging: identifiers and sizes, never content
 
-## Authorization headers are never logged
+- The target adapter logs per attempt only: target-system ID, HTTP status, latency, body byte
+  count, or the exception class name on transport failure. Never questions, answers, citations,
+  chunk content, bodies, or header values.
+- Authorization/API-key headers are never logged on any path — verified by
+  `StandardHttpTargetSystemAdapterWireMockTest#secretHeaderIsInjectedButNeverAppearsInLogOutput`,
+  which captures the adapter's log output during a real (WireMock-backed) authenticated call and
+  asserts the secret never appears, while proving the header genuinely was sent.
+- Judge prompts and outputs are never logged; `OllamaJudgeClient` exception messages carry
+  exception class names and the configured model name only.
+- **Development-only opt-in (spec §23):** `rag-evaluation.logging.verbose-content=true` makes the
+  target adapter and the judge client additionally log full payloads and prompts at DEBUG level.
+  Enabling it prints a prominent startup warning (`ContentLoggingProperties`); it exists for
+  local debugging of request templates and judge prompts and must never be enabled anywhere else.
+- **Structured log context (spec §24):** every log line carries the MDC block
+  `[cid=… run=… exec=… target=… eval=…]` — `correlationId` for HTTP requests (reused from an
+  inbound `X-Correlation-Id` header, echoed on the response, attached to every RFC 9457
+  `ProblemDetail`), and `runId`/`executionId`/`targetSystemId`/`evaluatorKey` on run-worker
+  threads.
 
-`StandardHttpTargetSystemAdapter` builds the `Authorization` / API-key header directly from the
-resolved secret value and hands it to `RestClient` without ever passing it through a log
-statement. This is verified by
-`StandardHttpTargetSystemAdapterWireMockTest#secretHeaderIsInjectedButNeverAppearsInLogOutput`,
-which attaches a Logback `ListAppender` to the adapter's logger for the duration of a real
-(WireMock-backed) call with an actual secret value, and asserts the secret string never appears in
-any captured log message — while separately verifying (via WireMock's request-matching) that the
-header genuinely was sent.
+## Metrics carry no client content
+
+Micrometer metrics (`/actuator/metrics`, `/actuator/prometheus`) use only bounded tag values:
+outcome/status names, registered evaluator keys, exception class names. No question text, no
+client content, no test-case/run/execution IDs as tags (spec §24; tag policy centralized in
+`WorkbenchMetrics`, asserted by `HardeningIntegrationTest`).
 
 ## Secrets: name only, never the value
 
-`TargetSystem` persists `secretEnvironmentVariable` (the name of an environment variable) and
-`apiKeyHeaderName` (the header name to send it under, for `API_KEY_HEADER` auth). It has no column
-capable of holding a secret value. `SecretResolver.resolve(TargetSystem)` reads
-`System.getenv(secretEnvironmentVariable)` at invocation time and returns it as a transient
-`TargetSystemConfiguration.resolvedSecretValue()` — this value lives only for the duration of one
-adapter call, is never persisted, and (per above) is never logged. `TargetSystemResponse` (the API
-DTO) exposes `secretEnvironmentVariable`/`apiKeyHeaderName` (harmless — they're just names) and has
-no field that could carry a resolved value.
-
-If a target requires authentication and the referenced environment variable isn't set,
-`POST /api/v1/targets/{id}/test-connection` fails fast with a 400 `ProblemDetail` naming the
-missing variable, rather than sending a blank/null credential to the target.
-
-## URL validation
-
-`TargetUrlValidator` rejects any `endpointUrl` whose scheme is not `http` or `https` (RFC 9457
-`ProblemDetail`, 400). `localhost` and other loopback/private hosts are explicitly **allowed** —
-this is a local evaluation workbench, and pointing it at a target on the same machine (e.g. the
-`demo` profile's target, arriving in Phase 3) is the normal setup, not an SSRF concern to guard
-against. Redirects are never followed unless a target explicitly sets `followRedirects: true`
-(enforced via the JDK `HttpClient`'s `Redirect.NEVER` policy by default).
+`TargetSystem` persists `secretEnvironmentVariable` (the *name* of an environment variable) and
+`apiKeyHeaderName`. It has no column capable of holding a secret value.
+`SecretResolver.resolve(TargetSystem)` reads the environment at invocation time; the value lives
+only in the transient per-call `TargetSystemConfiguration`, is never persisted, never logged, and
+appears in no API response (`TargetSystemResponse` has no field for it). If the referenced
+variable is unset, the connection test fails fast with a 400 naming the variable rather than
+sending a blank credential. `.env.example` documents variable names only; `.env` is git-ignored.
 
 ## Response size limits
 
-`StandardHttpTargetSystemAdapter` reads a target's response through a bounded stream
-(`rag-evaluation.target.maximum-response-bytes`, default 2 MiB) and aborts before buffering more
-than that — an oversized response never fully lands in memory, and is reported as an
-`INVALID_RESPONSE` outcome (`RESPONSE_TOO_LARGE`), not silently truncated or retried.
+The adapter reads responses through a bounded stream
+(`rag-evaluation.target.maximum-response-bytes`, default 2 MiB) and aborts before buffering more —
+an oversized response never fully lands in memory and is recorded as `INVALID_RESPONSE`
+(`RESPONSE_TOO_LARGE`), never silently truncated.
 
-## LLM evaluation stays local: Ollama only, no external or paid APIs
+## URL validation and redirects
 
-As of Phase 5, client content (questions, chatbot answers, retrieved-chunk content, reference
-answers, expected facts) is sent to exactly one model integration: the locally running **Ollama**
-server at `spring.ai.ollama.base-url` (`OLLAMA_BASE_URL`, default `http://localhost:11434`). No
-external or paid LLM API is on the classpath or configured — the only Spring AI model starter in
-`pom.xml` is `spring-ai-starter-model-ollama`, and `OllamaJudgeClient` is the single code path
-that sends content to a model. Judge prompts and outputs are never logged; `OllamaJudgeClient`'s
-exception messages carry exception class names and the configured model name only, never prompt
-content.
+`TargetUrlValidator` rejects any endpoint URL whose scheme is not `http`/`https`. Loopback hosts
+are deliberately allowed (local workbench; the demo target lives on localhost). Redirects are
+never followed unless the target explicitly sets `followRedirects: true`.
 
-Spring AI's chat observations are on Micrometer's plumbing, but **prompt/completion content export
-stays disabled**: `spring.ai.chat.observations.log-prompt=false` and
-`spring.ai.chat.observations.log-completion=false` are pinned in `application.properties` (they
-are also the Spring AI defaults) so enabling content export requires an explicit, visible opt-in
-in configuration review.
+## What is stored per execution, and how to store less
 
-What the LLM evaluators persist (spec §12) is the structured judge output as evidence on
-`EvaluationMetricResult` — model name, evaluator/prompt versions, per-claim verdicts, quoted
-statements from the evaluated answer — in the same Postgres database that already stores the
-executions themselves; nothing leaves the local machine.
+By default a `TestExecution` keeps the full captured evidence: normalized answer, citations,
+retrieved chunks, raw response JSON, request payload, latency, tokens, HTTP status, error info.
+That default exists because replay (re-judging stored responses without re-calling the chatbot)
+and the evidence-first report depend on it.
+
+Two switches reduce capture (spec §23), applied centrally in `RunStateService` so no adapter can
+bypass them (proven by `StorageConfigurationIntegrationTest`):
+
+- `rag-evaluation.storage.store-raw-responses=false` — the raw response body is never persisted;
+  normalized fields still are. Lost: re-extracting anything from the original payload later.
+- `rag-evaluation.storage.store-retrieved-chunk-content=false` — chunks are persisted without
+  their content text (IDs, titles, ranks, scores kept). Retrieval metrics still work;
+  content-dependent LLM evaluators (groundedness, context relevance) report missing required
+  data instead of judging.
+
+Both apply at capture time; already-persisted rows are unaffected, and a replay copies whatever
+its source stored.
+
+## Deletion and retention
+
+- `DELETE /api/v1/evaluation-runs/{id}` removes the run and every dependent row — executions,
+  metric results, human reviews, findings, imported traces — via the database-level `ON DELETE
+  CASCADE` foreign keys (proven end to end by `HardeningIntegrationTest`). A replay run that
+  referenced a deleted execution keeps its own copied data; only the source link is nulled.
+  QUEUED/RUNNING runs must be cancelled first (409 otherwise).
+- **Retention:** there is no automatic expiry — data stays until you delete it. Retention is an
+  engagement-level decision: delete runs via the API when an engagement ends, or wipe everything
+  with `scripts/reset-local-data.sh` (removes the Postgres volume after explicit confirmation;
+  Liquibase recreates an empty schema on the next start; downloaded Ollama models are kept —
+  they contain no client data).
+
+## Local-only deployment mode
+
+The documented deployment mode is **local-only**: `compose.yaml` binds PostgreSQL and Ollama to
+`127.0.0.1`, and the `local` profile sets `server.address=127.0.0.1`, so neither the data stores
+nor the HTTP API — which serves full client content in reports and review contexts and has **no
+authentication layer** — is reachable from the network. Removing that binding means choosing a
+shared deployment; the application deliberately provides no access control (out of MVP scope),
+so you must put your own in front.
 
 ## Untrusted-content handling in judge prompts
 
-Every judge system prompt (`UntrustedContent.SYSTEM_PREAMBLE`) marks the chatbot answer and
-retrieved context as untrusted data inside explicit BEGIN/END delimiters, forbids following
-instructions embedded in them, forbids outside factual knowledge unless the metric's rubric
-permits it, and requires answering only in the defined JSON schema. Retrieved context passed to a
+Every judge system prompt marks the chatbot answer and retrieved context as untrusted data inside
+explicit BEGIN/END delimiters, forbids following instructions embedded in them, and requires
+answering only in the defined JSON schema (`UntrustedContent`). Retrieved context passed to a
 judge is capped at `rag-evaluation.evaluator.maximum-context-characters` (default 30000);
-truncation is never silent — it is recorded in evidence metadata and flags the result for human
-review.
+truncation is recorded in evidence metadata and flags the result for human review — never silent.
 
-## Not yet implemented (later phases)
+## Sample limitation language
 
-- Configurable storage of raw target responses and retrieved-chunk content
-  (`rag-evaluation.storage.store-raw-responses`, `store-retrieved-chunk-content`).
-- Dev-only opt-in for verbose content logging.
-- Run deletion (what's removed, how it's triggered) — Phase 8.
-- Local-only deployment mode statement and sample limitation language — Phase 8, alongside the
-  full README.
+Suitable for a statement of work or report appendix. **This is engineering documentation, not
+legal advice; it claims no certification or regulatory compliance.**
+
+> Evaluation data (questions, chatbot answers, citations, and retrieved document excerpts) is
+> processed and stored exclusively on the consultant's machine in a local PostgreSQL database.
+> No content is sent to third-party or cloud AI services; automated judging uses a language
+> model running locally on the same machine. Data is retained only for the duration of the
+> engagement and is deleted afterwards on request. This describes the tool's engineering
+> behavior; it is not a compliance certification (e.g. GDPR, SOC 2, ISO 27001), and any formal
+> data-processing commitments must be agreed separately.

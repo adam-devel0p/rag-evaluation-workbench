@@ -72,7 +72,8 @@ class StandardHttpTargetSystemAdapterWireMockTest {
                 jsonMapper,
                 new RequestTemplateSubstitutor(jsonMapper),
                 new JsonPointerExtractor(),
-                new TargetProperties(maximumResponseBytes, new TargetProperties.Retry(maximumAttempts, Duration.ofMillis(20), 1.5)));
+                new TargetProperties(maximumResponseBytes, new TargetProperties.Retry(maximumAttempts, Duration.ofMillis(20), 1.5)),
+                new com.rageval.workbench.configuration.ContentLoggingProperties());
     }
 
     private TargetSystemConfiguration configuration(String path) {

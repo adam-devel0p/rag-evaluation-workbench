@@ -218,6 +218,27 @@ public class RunService {
         return run;
     }
 
+    /**
+     * Deletes a run and all its dependent data (spec §21/§23): test executions, metric results,
+     * human reviews, findings, and imported-trace rows go with it via the {@code ON DELETE
+     * CASCADE} foreign keys laid down in Phase 1; a replay run that referenced one of the deleted
+     * executions keeps its own copied data ({@code source_execution_id} is set NULL, not
+     * cascaded). A QUEUED or RUNNING run must be cancelled first — deleting rows under an active
+     * worker would turn its next state write into a spurious failure.
+     */
+    @Transactional
+    public void delete(UUID runId) {
+        EvaluationRun run = getOrThrow(runId);
+        if (run.getStatus() == RunStatus.QUEUED || run.getStatus() == RunStatus.RUNNING) {
+            throw new ConflictException(
+                    "Run " + runId + " is " + run.getStatus()
+                            + "; cancel it and wait for it to stop before deleting");
+        }
+        long executions = executionRepository.countByEvaluationRunId(runId);
+        runRepository.delete(run);
+        log.info("Run {} deleted along with its {} executions and their dependent data", runId, executions);
+    }
+
     @Transactional(readOnly = true)
     public EvaluationRun getOrThrow(UUID runId) {
         return runRepository

@@ -2,6 +2,8 @@ package com.rageval.workbench.run.application;
 
 import com.rageval.workbench.common.error.ConflictException;
 import com.rageval.workbench.common.error.NotFoundException;
+import com.rageval.workbench.common.observability.WorkbenchMetrics;
+import com.rageval.workbench.configuration.StorageProperties;
 import com.rageval.workbench.dataset.domain.EvaluationTestCase;
 import com.rageval.workbench.dataset.infrastructure.EvaluationTestCaseRepository;
 import com.rageval.workbench.run.domain.EvaluationRun;
@@ -10,6 +12,7 @@ import com.rageval.workbench.run.domain.RunStatus;
 import com.rageval.workbench.run.domain.TestExecution;
 import com.rageval.workbench.run.infrastructure.EvaluationRunRepository;
 import com.rageval.workbench.run.infrastructure.TestExecutionRepository;
+import com.rageval.workbench.run.domain.RetrievedChunk;
 import com.rageval.workbench.target.domain.TargetInvocationOutcome;
 import com.rageval.workbench.target.domain.TargetInvocationResult;
 import java.time.Instant;
@@ -39,14 +42,20 @@ public class RunStateService {
     private final EvaluationRunRepository runRepository;
     private final TestExecutionRepository executionRepository;
     private final EvaluationTestCaseRepository testCaseRepository;
+    private final StorageProperties storageProperties;
+    private final WorkbenchMetrics metrics;
 
     public RunStateService(
             EvaluationRunRepository runRepository,
             TestExecutionRepository executionRepository,
-            EvaluationTestCaseRepository testCaseRepository) {
+            EvaluationTestCaseRepository testCaseRepository,
+            StorageProperties storageProperties,
+            WorkbenchMetrics metrics) {
         this.runRepository = runRepository;
         this.executionRepository = executionRepository;
         this.testCaseRepository = testCaseRepository;
+        this.storageProperties = storageProperties;
+        this.metrics = metrics;
     }
 
     /**
@@ -181,13 +190,17 @@ public class RunStateService {
     public void recordInvocationResult(UUID executionId, TargetInvocationResult result) {
         TestExecution execution = loadExecution(executionId);
         Instant completedAt = Instant.now();
+        // Spec §23: raw-response and retrieved-chunk-content storage are configurable. Applied
+        // here — the single point every capture path (live and imported-trace) writes through —
+        // so no adapter can bypass it. The normalized answer is always stored; without it there
+        // is nothing to evaluate.
         if (result.outcome() == TargetInvocationOutcome.SUCCEEDED) {
             execution.recordSuccess(
                     result.requestPayload(),
                     result.answer(),
-                    result.rawResponse(),
+                    storageProperties.storeRawResponses() ? result.rawResponse() : null,
                     result.citations(),
-                    result.retrievedChunks(),
+                    withChunkContentPolicyApplied(result.retrievedChunks()),
                     result.targetModel(),
                     result.latencyMilliseconds(),
                     result.inputTokens(),
@@ -200,7 +213,7 @@ public class RunStateService {
             execution.recordFailure(
                     toExecutionStatus(result.outcome()),
                     result.requestPayload(),
-                    result.rawResponse(),
+                    storageProperties.storeRawResponses() ? result.rawResponse() : null,
                     result.errorType(),
                     result.errorMessage(),
                     result.httpStatus(),
@@ -208,6 +221,24 @@ public class RunStateService {
                     execution.getStartedAt(),
                     completedAt);
         }
+        metrics.recordTestExecution(execution.getStatus().name());
+    }
+
+    /** Strips chunk {@code content} when {@code store-retrieved-chunk-content=false}; IDs, titles, ranks, and scores are kept. */
+    private List<RetrievedChunk> withChunkContentPolicyApplied(List<RetrievedChunk> chunks) {
+        if (storageProperties.storeRetrievedChunkContent() || chunks == null || chunks.isEmpty()) {
+            return chunks;
+        }
+        return chunks.stream()
+                .map(chunk -> new RetrievedChunk(
+                        chunk.chunkId(),
+                        chunk.documentId(),
+                        chunk.documentTitle(),
+                        null,
+                        chunk.rank(),
+                        chunk.retrievalScore(),
+                        chunk.metadata()))
+                .toList();
     }
 
     /**
@@ -231,6 +262,7 @@ public class RunStateService {
             return;
         }
         Instant completedAt = Instant.now();
+        metrics.recordTestExecution(source.getStatus().name());
         if (source.getStatus() == ExecutionStatus.SUCCEEDED) {
             execution.recordSuccess(
                     source.getRequestPayload(),
@@ -297,6 +329,7 @@ public class RunStateService {
         } else {
             run.markFailed(total == 0 ? "Dataset produced no executions" : "No execution succeeded");
         }
+        metrics.recordEvaluationRun(run.getStatus().name());
         log.info("Run {} finalized as {} ({}/{} executions succeeded)", runId, run.getStatus(), succeeded, total);
     }
 

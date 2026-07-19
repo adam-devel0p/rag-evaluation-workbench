@@ -7,144 +7,135 @@ human review, classifies failure causes with evidence, and renders HTML reliabil
 can compare a baseline run against a candidate run and replay stored responses through updated
 evaluators without re-calling the chatbot.
 
-It is a consultant's internal workbench — no auth, no multi-tenancy, no SaaS features. The app
-evaluates *another* system; it is not itself a chatbot.
+**Status: MVP complete** (phases 0–8; see `docs/implementation-plan.md`).
 
-**Status:** Phases 0–7 complete (persistence, targets, datasets, live runs, deterministic +
-LLM evaluation, review, reports, replay, comparison). Phase 8 (hardening: compose file, run
-deletion, OpenAPI, scripts) is not done yet — see `docs/implementation-plan.md`.
+## What it does / what it does NOT do
 
-## Tech stack
+**Does:** target-system configuration with secret-by-env-var-name auth · dataset import
+(JSON/CSV) · live evaluation runs with repetitions, retries, cancellation/resume and crash
+recovery · imported-trace evaluation (offline logs) · nine deterministic evaluators · eight
+local-LLM judge evaluators (Ollama) · evidence-based failure classification with an honest
+UNKNOWN · human-review workflow layered over automated results · server-rendered HTML run and
+comparison reports (no JavaScript) · replay · baseline-vs-candidate comparison with
+evaluator-version warnings · run deletion · Prometheus metrics.
 
-Java 21 · Spring Boot 4.1.0 · Spring AI 2.0.0 (Ollama) · Maven Wrapper · PostgreSQL +
-Liquibase · Spring Data JPA · Spring MVC + `RestClient` · Thymeleaf (server-rendered reports,
-no JS) · Jackson 3 (`tools.jackson.*`) · Testcontainers · WireMock · Actuator + Micrometer.
+**Does NOT:** index or embed client documents, generate RAG answers, or host a chatbot · no
+customer accounts, auth, or multi-tenancy (local-only tool) · no external/paid LLM APIs — judging
+is local Ollama only · no production monitoring, PDF export, automatic remediation, or compliance
+certification. It is a consultant's internal workbench, not a SaaS platform.
 
-## Prerequisites
+## Architecture overview
+
+One Spring Boot application (Java 21, Spring Boot 4.1.0, Spring AI 2.0.0, PostgreSQL +
+Liquibase, Jackson 3), organized in modules with one-directional dependencies:
+
+```
+report ─▶ comparison ─▶ review ─▶ classification ─▶ evaluation ─▶ run ─▶ target
+                                                             (all) ─▶ dataset, common, configuration
+```
+
+- **target** — target CRUD, the `RestClient` HTTP adapter (request templating via Jackson-tree
+  substitution, JSON-pointer response extraction, exact spec retry policy, bounded response
+  reading), secret resolution from env vars.
+- **run** — run state machine persisted on every step, bounded worker pool, startup recovery,
+  imported traces, replay.
+- **evaluation** — the `EvaluationStrategy` abstraction; deterministic evaluators + LLM judges
+  over a structured-output `JudgeClient` (schema-enforced, untrusted-content hardened);
+  aggregation with evaluator-error-free denominators.
+- **classification / review / report / comparison** — §16 failure rules with evidence, the
+  human-review queue, the 20-section HTML report, baseline-vs-candidate comparison.
+
+Key invariants: chatbot failure ≠ evaluator failure, no score without evidence, Liquibase owns
+the schema, controllers hold no business logic (ArchUnit-enforced), logs/metrics carry no client
+content.
+
+## Requirements
 
 - **Java 21** (`java -version`)
-- **Docker** — required for the integration tests (Testcontainers Postgres) and for the
-  easiest way to run the app locally
-- **Ollama** — *optional*. The app builds, starts, and evaluates deterministically without it.
-  Only the LLM judge evaluators need it; when Ollama is unreachable those metric results
-  degrade to `FAILED` (never counted as a chatbot failure).
+- **Docker** (integration tests via Testcontainers; local Postgres/Ollama via compose)
+- **Ollama** — *optional.* The app builds, starts, and evaluates deterministically without it;
+  LLM metric results degrade to `FAILED` (never a chatbot failure) when it is unreachable.
 
-## Quick start (recommended): Testcontainers dev mode
-
-There is no `compose.yaml` or bundled datasource config yet (planned for Phase 8). The
-easiest way to run the app is Spring Boot's test-run, which starts throwaway Postgres and
-Ollama containers automatically via `TestcontainersConfiguration`:
+## Quick start
 
 ```bash
-./mvnw spring-boot:test-run -Dspring-boot.run.profiles=demo
+# 1. Start PostgreSQL and Ollama (named volumes, health checks, bound to 127.0.0.1)
+docker compose up -d postgres ollama
+
+# 2. Pull the evaluator model (optional — deterministic evaluation works without it).
+#    Reads OLLAMA_EVALUATOR_MODEL, defaults to llama3.2:3b, skips if already pulled:
+./scripts/pull-models.sh
+
+# 3. Run the application (profiles: local = compose datasource + loopback bind, demo = built-in fake chatbot)
+./mvnw spring-boot:run -Dspring-boot.run.profiles=local,demo
 ```
 
-The app starts on **http://localhost:8080** with Liquibase applying the schema. The `demo`
-profile enables a built-in fake chatbot at `POST /demo-target/chat` (see the walkthrough
-below). Note the containers are ephemeral — data is gone on restart.
+Or all three in one step: `./scripts/start-local.sh`. The app listens on
+**http://127.0.0.1:8080**; Liquibase creates/validates the schema on startup. Swagger UI:
+`http://127.0.0.1:8080/swagger-ui`, OpenAPI JSON at `/v3/api-docs`.
 
-## Alternative: run against your own Postgres
+To wipe all locally stored evaluation data: `./scripts/reset-local-data.sh` (asks for
+confirmation; keeps downloaded Ollama models).
 
-Start Postgres yourself, e.g.:
-
-```bash
-docker run -d --name rageval-postgres -p 5432:5432 \
-  -e POSTGRES_DB=rageval -e POSTGRES_USER=rageval -e POSTGRES_PASSWORD=rageval \
-  postgres:17
-```
-
-Then point the app at it (no datasource is configured in `application.properties`, so pass it
-via environment or system properties):
-
-```bash
-SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5432/rageval \
-SPRING_DATASOURCE_USERNAME=rageval \
-SPRING_DATASOURCE_PASSWORD=rageval \
-./mvnw spring-boot:run -Dspring-boot.run.profiles=demo
-```
-
-This keeps data across restarts. Liquibase owns the schema (`ddl-auto=validate`) — never
-create tables by hand; migrations live under `src/main/resources/db/changelog/`.
-
-### Optional: Ollama for the LLM judge
-
-```bash
-docker run -d --name rageval-ollama -p 11434:11434 ollama/ollama
-docker exec rageval-ollama ollama pull llama3.2:3b
-```
+### Ollama configuration
 
 | Env var | Default | Meaning |
 |---|---|---|
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama endpoint |
-| `OLLAMA_EVALUATOR_MODEL` | `llama3.2:3b` | Judge model |
+| `OLLAMA_EVALUATOR_MODEL` | `llama3.2:3b` | Judge model (must be pulled) |
 | `OLLAMA_TEMPERATURE` | `0.0` | Judge temperature |
 | `OLLAMA_MAX_CONCURRENCY` | `2` | Parallel judge calls |
 
-All other tunables (worker pool, retry/backoff, evaluator thresholds, citation policy, …) are
-in [application.properties](src/main/resources/application.properties) with comments, and most
-evaluator settings can also be overridden **per run** via `evaluatorConfiguration` on the run
-request.
+`.env.example` documents every variable; copy it to `.env` (git-ignored) if you use one. All
+other tunables live commented in
+[application.properties](src/main/resources/application.properties); most evaluator settings can
+also be overridden per run via `evaluatorConfiguration`.
 
 ## Build & test
 
 ```bash
-./mvnw clean verify              # full build + tests; needs Docker, must pass with NO Ollama
-./mvnw clean verify -Pollama-it  # additionally runs *OllamaIT real-model tests
+./mvnw clean verify              # full build + tests; needs Docker, passes with NO Ollama running
+./mvnw clean verify -Pollama-it  # additionally runs the *OllamaIT real-model tests
                                  #   (needs Ollama running + OLLAMA_EVALUATOR_MODEL pulled)
-./mvnw test -Dtest=DemoTargetIntegrationTest   # run a single test class
+./mvnw test -Dtest=HardeningIntegrationTest   # a single test class
 ```
 
-The default `verify` deliberately excludes real-model tests; LLM evaluators are tested against
-a deterministic fake `JudgeClient`.
+The default `verify` never touches a real model — LLM evaluators are tested against a
+deterministic fake `JudgeClient`, and PostgreSQL integration tests run through Testcontainers.
 
-## Debugging
+## Complete evaluation workflow (demo profile)
 
-Attach a debugger on port 5005:
+The `demo` profile ships a fake chatbot (`POST /demo-target/chat`) with 14 deliberate scenarios
+(correct answer, wrong version, hallucination, missing citation, refusal failures, timeout,
+HTTP 500, nondeterminism, …) and a matching dataset
+[examples/demo-dataset.json](examples/demo-dataset.json).
 
-```bash
-./mvnw spring-boot:test-run -Dspring-boot.run.profiles=demo \
-  -Dspring-boot.run.jvmArguments="-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005"
-```
+**The whole workflow below, scripted and safe to re-run: [`examples/demo-commands.sh`](examples/demo-commands.sh)**
+(uses `jq` only if installed; falls back to python3 for ID extraction).
 
-Useful endpoints and knobs:
+With the app running (`local,demo` profiles), step by step — set `BASE=http://127.0.0.1:8080`:
 
-- `GET /actuator/health` — liveness (includes DB); `GET /actuator/metrics`, `GET /actuator/prometheus`
-- SQL logging: add `--logging.level.org.hibernate.SQL=DEBUG` (or set in a local profile)
-- Privacy rule: the app never logs full prompts/answers/chunks — identifiers and sizes only.
-  Don't "fix" that while debugging; verbose content logging is a dev-only opt-in.
-
-## Manual end-to-end walkthrough (demo target)
-
-With the app running under the `demo` profile, the built-in demo chatbot
-(`POST /demo-target/chat`) implements 14 deliberate scenarios (spec §27): correct answers,
-wrong version, missing citation, hallucination, refusal, timeout, HTTP 500, nondeterminism,
-etc. The shipped dataset [examples/demo-dataset.json](examples/demo-dataset.json) exercises
-all of them.
-
-### 1. Import the demo dataset and mark it READY
+### 1. Import a dataset and mark it READY
 
 ```bash
-DATASET_ID=$(curl -s -X POST localhost:8080/api/v1/datasets/import/json \
+DATASET_ID=$(curl -s -X POST $BASE/api/v1/datasets/import/json \
   -H 'Content-Type: application/json' \
   --data-binary @examples/demo-dataset.json | jq -r .id)
-
-curl -s -X POST localhost:8080/api/v1/datasets/$DATASET_ID/mark-ready
+curl -s -X POST $BASE/api/v1/datasets/$DATASET_ID/mark-ready
 ```
 
-### 2. Register the demo chatbot as a target system
+Import is transactional and all-or-nothing with row-level error reporting. CSV import (basic
+fields) exists at `POST /api/v1/datasets/import/csv`.
+
+### 2. Configure the external chatbot as a target
 
 ```bash
-TARGET_ID=$(curl -s -X POST localhost:8080/api/v1/targets \
-  -H 'Content-Type: application/json' -d '{
-  "name": "Demo Target",
+TARGET_ID=$(curl -s -X POST $BASE/api/v1/targets -H 'Content-Type: application/json' -d '{
+  "name": "Demo chatbot",
   "adapterType": "STANDARD_HTTP",
-  "endpointUrl": "http://localhost:8080/demo-target/chat",
+  "endpointUrl": "http://127.0.0.1:8080/demo-target/chat",
   "httpMethod": "POST",
-  "requestTemplate": {
-    "question": "{{question}}",
-    "testCaseId": "{{testCaseId}}",
-    "conversationId": "{{conversationId}}"
-  },
+  "requestTemplate": {"question": "{{question}}", "testCaseId": "{{testCaseId}}"},
   "answerJsonPointer": "/answer",
   "citationsJsonPointer": "/citations",
   "retrievedChunksJsonPointer": "/retrievedChunks",
@@ -155,137 +146,169 @@ TARGET_ID=$(curl -s -X POST localhost:8080/api/v1/targets \
   "followRedirects": false,
   "maximumConcurrency": 2,
   "authenticationType": "NONE",
-  "responseMapping": {
-    "inputTokensJsonPointer": "/usage/inputTokens",
-    "outputTokensJsonPointer": "/usage/outputTokens"
-  }
+  "responseMapping": {"inputTokensJsonPointer": "/usage/inputTokens",
+                       "outputTokensJsonPointer": "/usage/outputTokens"}
 }' | jq -r .id)
-
-# sanity check the wiring without creating a run:
-curl -s -X POST localhost:8080/api/v1/targets/$TARGET_ID/test-connection \
-  -H 'Content-Type: application/json' -d '{"question": "ping"}' | jq
 ```
 
-For a **real** target, set `authenticationType` (e.g. `API_KEY_HEADER` / `BEARER`) plus
-`secretEnvironmentVariable` — the *name* of the env var holding the key. Secrets are never
-persisted or logged.
+For a **real** chatbot set `authenticationType` to `BEARER_TOKEN` or `API_KEY_HEADER` plus
+`secretEnvironmentVariable` — the **name** of the env var holding the credential. Only the name
+is ever persisted; the value is read from your environment at call time and never logged.
 
-### 3. Create and start an evaluation run
-
-```bash
-RUN_ID=$(curl -s -X POST localhost:8080/api/v1/evaluation-runs \
-  -H 'Content-Type: application/json' -d "{
-  \"targetSystemId\": \"$TARGET_ID\",
-  \"datasetId\": \"$DATASET_ID\",
-  \"name\": \"Demo run\",
-  \"repetitionsPerTestCase\": 1
-}" | jq -r .id)
-
-curl -s -X POST localhost:8080/api/v1/evaluation-runs/$RUN_ID/start
-
-# poll until COMPLETED / PARTIALLY_COMPLETED (DEMO-013 answers HTTP 500 on purpose,
-# so the demo run legitimately ends PARTIALLY_COMPLETED):
-curl -s localhost:8080/api/v1/evaluation-runs/$RUN_ID | jq .status
-```
-
-`POST .../cancel` and `POST .../resume` exist for long runs; interrupted runs (app restart)
-are marked `INTERRUPTED` and can be resumed.
-
-### 4. Inspect results
+### 3. Test the connection
 
 ```bash
-curl -s localhost:8080/api/v1/evaluation-runs/$RUN_ID/executions | jq
-curl -s localhost:8080/api/v1/evaluation-runs/$RUN_ID/metrics | jq
-curl -s localhost:8080/api/v1/evaluation-runs/$RUN_ID/summary | jq
-curl -s localhost:8080/api/v1/evaluation-runs/$RUN_ID/findings | jq
-```
-
-Open the **HTML report** in a browser: `http://localhost:8080/reports/runs/<RUN_ID>`
-
-### 5. Human review of uncertain results
-
-```bash
-curl -s localhost:8080/api/v1/reviews/pending | jq          # what needs a human
-curl -s localhost:8080/api/v1/metric-results/<METRIC_RESULT_ID>/review-context | jq
-curl -s -X POST localhost:8080/api/v1/metric-results/<METRIC_RESULT_ID>/reviews \
+curl -s -X POST $BASE/api/v1/targets/$TARGET_ID/test-connection \
   -H 'Content-Type: application/json' \
-  -d '{"decision": "PASS", "reviewer": "mario", "justification": "Answer is factually correct."}' | jq
+  -d '{"sampleQuestion": "Which Java version does the payments service require?"}' | jq
 ```
 
-(Field shapes: see [SubmitReviewRequest.java](src/main/java/com/rageval/workbench/review/api/dto/SubmitReviewRequest.java).)
+Makes one real call and reports which JSON pointers resolved (answer, citations, chunks, model).
 
-### 6. Replay — re-evaluate stored responses without calling the chatbot
-
-Useful after changing evaluator config or when Ollama was down during the original run:
+### 4. Create an evaluation run
 
 ```bash
-REPLAY_ID=$(curl -s -X POST localhost:8080/api/v1/evaluation-runs/$RUN_ID/replay \
+RUN_ID=$(curl -s -X POST $BASE/api/v1/evaluation-runs -H 'Content-Type: application/json' -d '{
+  "targetSystemId": "'$TARGET_ID'",
+  "datasetId": "'$DATASET_ID'",
+  "name": "Demo baseline run",
+  "repetitionsPerTestCase": 2
+}' | jq -r .id)
+```
+
+### 5. Start it
+
+```bash
+curl -s -X POST $BASE/api/v1/evaluation-runs/$RUN_ID/start
+```
+
+`POST .../cancel` and `.../resume` exist for long runs; a run interrupted by an app restart is
+marked `INTERRUPTED` on startup and can be resumed (completed executions are never re-run).
+
+### 6. Poll run status
+
+```bash
+curl -s $BASE/api/v1/evaluation-runs/$RUN_ID | jq .status
+```
+
+The demo run legitimately ends **PARTIALLY_COMPLETED** — one scenario answers HTTP 500 on
+purpose. Inspect details:
+
+```bash
+curl -s $BASE/api/v1/evaluation-runs/$RUN_ID/summary  | jq   # aggregated §18 summary
+curl -s $BASE/api/v1/evaluation-runs/$RUN_ID/metrics?size=50  | jq   # per-evaluator results
+curl -s $BASE/api/v1/evaluation-runs/$RUN_ID/findings?size=50 | jq   # classified findings
+```
+
+### 7. Open the HTML report
+
+```
+http://127.0.0.1:8080/reports/runs/<RUN_ID>
+```
+
+Server-rendered, no JavaScript, all 20 spec sections — including what could **not** be evaluated
+and why (e.g. LLM metrics FAILED because Ollama was down — shown as tool failures, never chatbot
+failures).
+
+### 8. Submit a human review
+
+```bash
+curl -s "$BASE/api/v1/reviews/pending?runId=$RUN_ID&size=5" | jq          # triage queue
+MR_ID=<metricResultId from the queue>
+curl -s $BASE/api/v1/metric-results/$MR_ID/review-context | jq            # full context
+curl -s -X POST $BASE/api/v1/metric-results/$MR_ID/reviews \
   -H 'Content-Type: application/json' \
-  -d '{"name": "Replay with new settings"}' | jq -r .id)
-curl -s -X POST localhost:8080/api/v1/evaluation-runs/$REPLAY_ID/start
+  -d '{"decision": "CONFIRMED", "reviewerName": "Demo Reviewer",
+       "comment": "Verified against the demo documentation."}' | jq
 ```
 
-Replay runs make **zero** HTTP calls to the target (proven by WireMock request counting in
-`ReplayRunIntegrationTest`).
+Decisions: `CONFIRMED` / `REJECTED` / `UNCERTAIN` / `NEEDS_DOMAIN_EXPERT`, optional
+pass/score override — recorded **next to** the automated result, which is never mutated.
 
-### 7. Baseline vs. candidate comparison
-
-Simulate a "changed" chatbot by redirecting demo scenarios (e.g. make the wrong-answer
-scenario DEMO-002 behave like the correct one), run again, then compare:
+### 9. Replay — re-evaluate stored responses without calling the chatbot
 
 ```bash
-curl -s -X PUT localhost:8080/demo-target/scenario-redirects \
-  -H 'Content-Type: application/json' -d '{"DEMO-002": "DEMO-001"}'
-# ... create + start a second run (candidate) exactly like step 3 ...
-curl -s -X DELETE localhost:8080/demo-target/scenario-redirects   # restore behavior
-
-curl -s "localhost:8080/api/v1/run-comparisons?baselineRunId=$RUN_ID&candidateRunId=$CANDIDATE_RUN_ID" | jq
+REPLAY_ID=$(curl -s -X POST $BASE/api/v1/evaluation-runs/$RUN_ID/replay \
+  -H 'Content-Type: application/json' -d '{"name": "Demo replay run"}' | jq -r .id)
+curl -s -X POST $BASE/api/v1/evaluation-runs/$REPLAY_ID/start
 ```
 
-HTML comparison report:
-`http://localhost:8080/reports/comparisons?baselineRunId=..&candidateRunId=..`
-It includes explicit warnings when the two runs used different evaluator versions/prompts/models.
+Replay copies each captured response and re-runs the current evaluator pipeline — **zero** HTTP
+calls to the target (proven by WireMock request counting in `ReplayRunIntegrationTest`). Useful
+after changing evaluator config, or to fill in LLM metrics once Ollama is back up.
 
-## API overview
+### 10. Compare baseline and candidate runs
 
-| Area | Endpoints |
-|---|---|
-| Targets | `POST/GET /api/v1/targets`, `GET/PUT/DELETE /{id}`, `POST /{id}/test-connection` |
-| Datasets | `POST/GET /api/v1/datasets`, `GET /{id}`, `POST /{id}/mark-ready`, `GET/POST /{id}/test-cases`, `PUT /{id}/test-cases/{tcId}`, `POST /import/json`, `POST /import/csv` |
-| Runs | `POST/GET /api/v1/evaluation-runs`, `GET /{id}`, `POST /{id}/start\|cancel\|resume\|replay`, `GET /{id}/executions\|metrics\|summary\|findings` |
-| Imported traces | `POST /api/v1/imported-traces`, `POST /api/v1/imported-traces/csv` (evaluate captured logs offline) |
-| Review | `GET /api/v1/reviews/pending`, `GET /api/v1/metric-results/{id}/review-context\|reviews`, `POST .../reviews` |
-| Recommendations | `GET /api/v1/recommendation-templates`, `PUT /{category}` |
-| Comparison | `GET /api/v1/run-comparisons?baselineRunId=&candidateRunId=` |
-| Reports (HTML) | `GET /reports/runs/{runId}`, `GET /reports/comparisons?baselineRunId=&candidateRunId=` |
-| Demo (profile `demo` only) | `POST /demo-target/chat`, `PUT/DELETE /demo-target/scenario-redirects` |
+```bash
+curl -s "$BASE/api/v1/run-comparisons?baselineRunId=$RUN_ID&candidateRunId=$REPLAY_ID" | jq
+```
 
-Request/response shapes live in the `api/dto` package of each module; errors are RFC 9457
-`ProblemDetail` responses.
+HTML version: `http://127.0.0.1:8080/reports/comparisons?baselineRunId=..&candidateRunId=..`.
+Improved/regressed verdicts require conclusive outcomes on both sides; evaluator
+version/prompt/model mismatches produce explicit "not scientifically clean" warnings above every
+number. To simulate a changed chatbot in the demo:
+`curl -s -X PUT $BASE/demo-target/scenario-redirects -H 'Content-Type: application/json' -d '{"DEMO-002": "DEMO-001"}'`,
+then run a second live run as the candidate.
 
-## Key concepts
+### Deleting a run
 
-- **Metric status vs. chatbot failure.** A metric result distinguishes *the chatbot failed the
-  metric* from *the evaluator itself failed* (`FAILED`, e.g. Ollama down) from *not
-  applicable*. Aggregation denominators exclude evaluator errors — never conflate the two.
-- **No score without evidence.** Every score carries its evidence; conflicting results are
-  never averaged into one number.
-- **Datasets** are `DRAFT` (editable) until `mark-ready`; test cases carry required facts,
-  forbidden claims, expected document IDs, refusal expectations, and severity.
-- **Runs** execute on a bounded in-app worker pool (`rag-evaluation.execution.*`); per-target
-  concurrency and timeouts live on the target itself.
+```bash
+curl -s -X DELETE $BASE/api/v1/evaluation-runs/$RUN_ID   # cascades all dependent data
+```
+
+## Observability
+
+- `GET /actuator/health` — includes the `evaluatorModel` component: **DOWN with a reason when
+  Ollama is unreachable** (the aggregate then reports 503 — deterministic evaluation still
+  works; the status is honest, not fatal).
+- `GET /actuator/info`, `/actuator/metrics`, `/actuator/prometheus` — application metrics under
+  `rageval.*` (target invocations/failures/latency, runs, executions, evaluator
+  executions/failures/duration, judge calls/failures, review backlog), tagged only with bounded
+  values — never client content or IDs.
+- Logs carry `[cid=… run=… exec=… target=… eval=…]` MDC context and no client content.
+
+## Data handling and its limitations
+
+Everything stays on your machine: local Postgres, local Ollama, no external APIs, no telemetry.
+Logs and metrics carry identifiers and sizes, never content. Secrets are env-var **names** in
+the database, values only at call time. Raw-response and chunk-content storage are configurable
+(`rag-evaluation.storage.*`). Deletion is per run (cascading) or wholesale
+(`scripts/reset-local-data.sh`); there is no automatic retention/expiry. The API has **no
+authentication** — the local profile binds to 127.0.0.1, and exposing it beyond loopback is on
+you. Full detail + sample client-facing limitation language (explicitly not a compliance
+claim): [docs/data-handling.md](docs/data-handling.md).
+
+## Known MVP limitations
+
+- **Black-box evidence only.** Root causes that need target internals (outdated vs. missing
+  document, retriever vs. index fault) are reported as findings needing human confirmation, or
+  honestly as UNKNOWN.
+- **LLM judgments are calibrated, not certified.** Judge agreement is measured against a small
+  labelled calibration set (`-Pollama-it`) and reported as agreement, never as "accuracy";
+  low-confidence and disagreeing results are routed to human review.
+- **No auth/multi-user.** One consultant, one machine. No concurrent-editing protections beyond
+  optimistic locking.
+- **In-memory run queue.** Queued runs don't survive a restart — startup recovery marks them
+  INTERRUPTED for explicit resume.
+- **Per-target concurrency changes** apply from the next application start (semaphores sized on
+  first use).
+- **SEMANTIC fact-match mode** falls back to case-insensitive matching plus LLM
+  reference-correctness judging; there is no dedicated embedding-based matcher.
+- **Ollama health = 503 aggregate** when the model is down (see Observability) — by design, but
+  worth knowing before wiring uptime probes to `/actuator/health`.
 
 ## Project layout
 
 ```
 src/main/java/com/rageval/workbench/
-├── common          shared api/error/json/persistence plumbing
-├── target          target-system CRUD, HTTP adapter, connection test, secrets
+├── common          shared api/error/json/csv/observability plumbing
+├── configuration   typed @ConfigurationProperties
+├── target          target CRUD, HTTP adapter, connection test, secret resolution
 ├── dataset         datasets + test cases, JSON/CSV import
-├── run             run lifecycle, worker pool, replay, imported traces
-├── evaluation      evaluator strategies (deterministic + llm), aggregation
+├── run             run state machine, worker pool, recovery, imported traces, replay
+├── evaluation      evaluator strategies (deterministic + llm), judge client, aggregation
 ├── classification  failure-cause rules, findings, recommendation templates
-├── review          human-review workflow
+├── review          human-review queue and decisions
 ├── report          Thymeleaf HTML run report
 ├── comparison      baseline-vs-candidate comparison + HTML report
 └── demo            demo-profile fake chatbot (spec §27 scenarios)
@@ -294,9 +317,10 @@ src/main/java/com/rageval/workbench/
 ## Further documentation
 
 - [docs/spec.md](docs/spec.md) — full functional specification
+- [docs/api.md](docs/api.md) — endpoint overview + complete cURL walkthrough + springdoc notes
 - [docs/implementation-plan.md](docs/implementation-plan.md) — phase checklist + current status
 - [docs/architecture.md](docs/architecture.md) — decisions and session log
 - [docs/evaluation-methodology.md](docs/evaluation-methodology.md) — what each evaluator
-  measures, its limitations, and how to interpret results
-- [docs/data-handling.md](docs/data-handling.md) — privacy and data-retention rules
+  measures, its limitations, how to interpret results
+- [docs/data-handling.md](docs/data-handling.md) — privacy, storage, deletion, local-only mode
 - [CLAUDE.md](CLAUDE.md) — non-negotiable constraints for AI-assisted development

@@ -2,6 +2,8 @@ package com.rageval.workbench.evaluation.llm;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.rageval.workbench.common.observability.WorkbenchMetrics;
+import com.rageval.workbench.configuration.ContentLoggingProperties;
 import com.rageval.workbench.configuration.LlmProperties;
 import com.rageval.workbench.dataset.domain.EvaluationTestCase;
 import com.rageval.workbench.dataset.domain.Severity;
@@ -49,7 +51,9 @@ class LlmJudgeOllamaIT {
         OllamaApi api = OllamaApi.builder().baseUrl(baseUrl).build();
         judge = new OllamaJudgeClient(
                 OllamaChatModel.builder().ollamaApi(api).build(),
-                new LlmProperties(model, 0.0, 2));
+                new LlmProperties(model, 0.0, 2),
+                new WorkbenchMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()),
+                new ContentLoggingProperties());
     }
 
     @Test

@@ -1,5 +1,6 @@
 package com.rageval.workbench.run.application;
 
+import com.rageval.workbench.common.observability.WorkbenchMetrics;
 import com.rageval.workbench.run.application.RunStateService.PendingExecution;
 import com.rageval.workbench.run.domain.RunStatus;
 import com.rageval.workbench.target.application.TargetSystemConfigurationFactory;
@@ -11,10 +12,12 @@ import com.rageval.workbench.target.domain.TargetSystemAdapter;
 import com.rageval.workbench.target.domain.TargetSystemConfiguration;
 import com.rageval.workbench.target.infrastructure.TargetSystemAdapterRegistry;
 import com.rageval.workbench.target.infrastructure.TargetSystemRepository;
+import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.context.ApplicationListener;
 import org.springframework.context.event.ContextClosedEvent;
 import org.springframework.stereotype.Component;
@@ -38,6 +41,7 @@ public class RunWorker implements ApplicationListener<ContextClosedEvent> {
     private final TargetSystemAdapterRegistry adapterRegistry;
     private final TargetConcurrencyLimiter concurrencyLimiter;
     private final EvaluationPipeline evaluationPipeline;
+    private final WorkbenchMetrics metrics;
 
     private volatile boolean shuttingDown;
 
@@ -47,13 +51,15 @@ public class RunWorker implements ApplicationListener<ContextClosedEvent> {
             TargetSystemConfigurationFactory configurationFactory,
             TargetSystemAdapterRegistry adapterRegistry,
             TargetConcurrencyLimiter concurrencyLimiter,
-            EvaluationPipeline evaluationPipeline) {
+            EvaluationPipeline evaluationPipeline,
+            WorkbenchMetrics metrics) {
         this.stateService = stateService;
         this.targetSystemRepository = targetSystemRepository;
         this.configurationFactory = configurationFactory;
         this.adapterRegistry = adapterRegistry;
         this.concurrencyLimiter = concurrencyLimiter;
         this.evaluationPipeline = evaluationPipeline;
+        this.metrics = metrics;
     }
 
     @Override
@@ -62,6 +68,20 @@ public class RunWorker implements ApplicationListener<ContextClosedEvent> {
     }
 
     public void process(UUID runId) {
+        // Structured-log context (spec §24): every statement logged from this worker thread — run
+        // state changes, adapter calls, evaluator errors — carries the run and target IDs.
+        MDC.put("runId", runId.toString());
+        try {
+            MDC.put("targetSystemId", stateService.targetSystemIdOf(runId).toString());
+            doProcess(runId);
+        } finally {
+            MDC.remove("runId");
+            MDC.remove("targetSystemId");
+            MDC.remove("executionId");
+        }
+    }
+
+    private void doProcess(UUID runId) {
         try {
             if (!stateService.markRunning(runId)) {
                 return;
@@ -93,10 +113,15 @@ public class RunWorker implements ApplicationListener<ContextClosedEvent> {
                     stateService.cancelRemainingExecutions(runId, "run cancelled");
                     return;
                 }
-                if (execution.sourceExecutionId() != null) {
-                    replayOne(execution);
-                } else {
-                    invokeOne(runId, target, configuration, adapter, execution);
+                MDC.put("executionId", execution.executionId().toString());
+                try {
+                    if (execution.sourceExecutionId() != null) {
+                        replayOne(execution);
+                    } else {
+                        invokeOne(runId, target, configuration, adapter, execution);
+                    }
+                } finally {
+                    MDC.remove("executionId");
                 }
             }
             // Spec §15 orchestration: evaluate → classify → aggregate before the run goes
@@ -160,6 +185,8 @@ public class RunWorker implements ApplicationListener<ContextClosedEvent> {
         } finally {
             concurrencyLimiter.release(target.getId(), target.getMaximumConcurrency());
         }
+        metrics.recordTargetInvocation(
+                result.outcome().name(), result.errorType(), Duration.ofMillis(result.latencyMilliseconds()));
         stateService.recordInvocationResult(execution.executionId(), result);
         evaluationPipeline.evaluateExecution(execution.executionId());
     }

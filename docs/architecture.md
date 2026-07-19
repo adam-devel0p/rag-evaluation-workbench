@@ -918,11 +918,113 @@ correct one. `RunComparisonIntegrationTest` drives exactly that: baseline demo r
 candidate run → DEMO-002 IMPROVED, DEMO-001 REGRESSED, DEMO-014 REGRESSED naturally via its
 rotation, DEMO-013 UNCHANGED, zero version warnings, and the HTML report asserted on top.
 
-## Later phases
+## Phase 8 notes
 
-To be filled in as Phase 8 lands. Each phase gets its own `## Phase N notes` section above
-this one with the reasoning behind decisions; the Session Log below is the short chronological
-index into that detail.
+### springdoc 3.0.3 verified against Boot 4.1.0 — and the Jackson collision it caused
+
+Spec §29 demanded real verification, not assumption. Facts established: springdoc's 2.8.x line
+targets Boot 3; the 3.x line is the Boot 4 line (3.0.3's published parent POM builds against
+`spring-boot-starter-parent:4.0.5` — checked on Maven Central, not guessed). Compatibility with
+this project's Boot 4.1.0 was then proven empirically: full suite green with springdoc on the
+classpath and `HardeningIntegrationTest#openApiDocumentIsServedBySpringdoc` asserting
+`/v3/api-docs` lists the real endpoints.
+
+The first full verify after adding it failed with 30 broken tests: springdoc (via swagger-core)
+brings Jackson **2** databind onto the classpath, and Hibernate's `JacksonIntegration`
+auto-detection then preferred the Jackson 2 format mapper over Jackson 3 — every JSONB column
+typed as `tools.jackson.databind.JsonNode` failed with "Could not deserialize string to java
+type". Fix: `spring.jpa.properties.hibernate.type.json_format_mapper=jackson3` (the
+`Jackson3JsonFormatMapper.SHORT_NAME`, verified via `javap`), pinning entity JSON mapping to
+Jackson 3 regardless of what else the classpath carries. Documented in `docs/api.md` since it is
+exactly the kind of silent-drift trap CLAUDE.md's Jackson-3 warning is about.
+
+### Metrics: one component owns every tag decision
+
+All spec §24 meters are created through `common.observability.WorkbenchMetrics`, so the
+no-high-cardinality-tags rule (§23/§24) is enforced in one reviewable place: allowed tag values
+are outcome/status enum names, registered evaluator keys, and exception class simple names —
+never IDs or content. Producers call it from where the facts are known: `RunWorker` (live target
+invocations only — replay/imported executions deliberately do not count as target invocations),
+`RunStateService` (terminal executions, terminal runs), `EvaluationService` (evaluator
+executions/failures/duration), `OllamaJudgeClient` (judge calls, success and every failure path).
+The review-backlog gauge is registered by `review.application.ReviewBacklogGauge` — the count
+query belongs to the review module, the metric name/description stays in `WorkbenchMetrics`, and
+the dependency direction stays review → common. `HardeningIntegrationTest` asserts the meters
+appear and that `rageval.evaluator.executions` carries exactly the `evaluator` and `status` tags.
+
+### Structured logs via MDC + one console pattern
+
+`CorrelationIdFilter` already put `correlationId` into MDC (Phase 2); Phase 8 adds
+`runId`/`targetSystemId`/`executionId` in `RunWorker` (set/removed in `try/finally` — worker
+threads are pooled) and `evaluatorKey` in `EvaluationService.runOne`. The console pattern renders
+them as a fixed `[cid=… run=… exec=… target=… eval=…]` block so every line from a worker thread
+carries its identifiers without any content logging.
+
+### Storage limits applied at the single persistence choke point
+
+`rag-evaluation.storage.store-raw-responses` / `store-retrieved-chunk-content` are enforced in
+`RunStateService.recordInvocationResult` — the one method every capture path (live adapter and
+imported-trace alike) writes through — rather than in adapters, so no future adapter can bypass
+them. Chunk stripping keeps IDs/titles/ranks/scores (retrieval metrics stay computable) and nulls
+only the content text. Replay copies what the source stored: the switches govern capture, not
+history. `StorageConfigurationIntegrationTest` proves the end-to-end behavior including that
+evaluation still runs.
+
+### Run deletion rides the Phase 1 FK design
+
+`DELETE /api/v1/evaluation-runs/{id}` is a JPA delete of the run row; the `ON DELETE CASCADE`
+FKs laid down in Phase 1 (executions → metric results → reviews; findings; imported traces) do
+the rest in the database, and `source_execution_id`'s `ON DELETE SET NULL` means deleting a
+source run never breaks a replay run's own copied data. QUEUED/RUNNING runs answer 409 (cancel
+first) — deleting rows under an active worker would turn its next state write into a spurious
+failure. Proven by `HardeningIntegrationTest` including the human-review cascade.
+
+### Controllers lost their repository shortcuts (ArchUnit made it a rule)
+
+Spec §28.5's "controllers do not depend directly on repositories" was violated by two Phase 4/6
+controllers (`FindingController`, `RunEvaluationController`) that did existence checks + paged
+reads straight off repositories. Introduced `FindingQueryService` / `MetricResultQueryService`
+(read-only application services) and moved the checks there — stated touch to passing code,
+behavior identical. `ArchitectureTest` now locks in the three spec rules: no controller →
+repository dependency, no `..domain..` → `..api..` dependency, and no controller method whose
+return type involves a `@Entity` class anywhere in its generic signature
+(`JavaType#getAllInvolvedRawTypes`, so `PageResponse<SomeEntity>` can't sneak through).
+
+### Health stays honestly DOWN without Ollama; tests re-enable metrics export
+
+Decision kept from Phase 5: `evaluatorModel` reports DOWN when Ollama is unreachable, which makes
+the aggregate `/actuator/health` answer 503 even though the workbench is fully functional for
+deterministic evaluation. Phase 8 documents this (README observability section) instead of
+papering over it with a status remap — an operator wiring a probe should see the honest state and
+read why in the details. Separately, Boot disables metrics export in tests by default;
+`@AutoConfigureMetrics` (relocated in Boot 4.1 to
+`org.springframework.boot.micrometer.metrics.test.autoconfigure`) turns the real Prometheus
+endpoint back on for the hardening IT.
+
+### New ProblemDetail handlers for client errors that were 500s
+
+Malformed UUIDs in path variables (`MethodArgumentTypeMismatchException`), missing required query
+parameters (`MissingServletRequestParameterException` — e.g. `/api/v1/run-comparisons` without
+IDs), and non-body parameter validation (`HandlerMethodValidationException`) previously fell into
+the `Exception` catch-all and answered 500. All three now answer RFC 9457 400s with field
+violations and the correlation ID.
+
+### Local profile = compose datasource + loopback bind
+
+`application-local.properties` points at the compose Postgres (rageval/rageval@localhost:5432)
+and sets `server.address=127.0.0.1` — the documented local-only deployment mode (spec §23): the
+API serves client content with no auth layer, so by default it is simply not reachable from the
+network; compose likewise publishes Postgres/Ollama on 127.0.0.1 only. Spec §25 suggests YAML
+config files; the project stays on `.properties` (consistent with every prior phase) — same
+typed `@ConfigurationProperties` underneath, format is cosmetic.
+
+### Verbose content logging is a loud, explicit dev-only opt-in
+
+`rag-evaluation.logging.verbose-content=true` (`ContentLoggingProperties`) makes exactly two
+places — the target adapter and the judge client — log payloads/prompts at DEBUG, and enabling it
+prints a startup WARN explaining that client content will land in the log. The Phase 8 grep audit
+confirmed no other log statement touches content; the WireMock redaction test keeps guarding the
+secret-header path.
 
 ## Session Log
 

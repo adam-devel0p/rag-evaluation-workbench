@@ -91,4 +91,16 @@ public class ReviewQueueRepository {
         }
         return new PageImpl<>(rows, pageable, total);
     }
+
+    /** Unfiltered backlog size, feeding the {@code rageval.review.backlog} gauge (spec §24). */
+    @Transactional(readOnly = true)
+    public long countPending() {
+        return entityManager
+                .createQuery(
+                        "select count(m) from EvaluationMetricResult m"
+                                + " where m.requiresHumanReview = true"
+                                + " and not exists (select r from HumanReview r where r.metricResultId = m.id)",
+                        Long.class)
+                .getSingleResult();
+    }
 }

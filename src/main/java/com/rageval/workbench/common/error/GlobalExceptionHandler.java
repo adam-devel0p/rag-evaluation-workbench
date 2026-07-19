@@ -8,8 +8,11 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.HandlerMethodValidationException;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
@@ -56,6 +59,51 @@ public class GlobalExceptionHandler {
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(
                 HttpStatus.BAD_REQUEST, "Request body is missing or malformed JSON");
         problem.setTitle("Malformed request body");
+        return withCorrelationId(problem, request);
+    }
+
+    /** A missing required query parameter (e.g. {@code baselineRunId} on the comparison endpoints) is a client error, not a 500. */
+    @ExceptionHandler(MissingServletRequestParameterException.class)
+    public ProblemDetail handleMissingParameter(
+            MissingServletRequestParameterException ex, HttpServletRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.BAD_REQUEST,
+                "Required request parameter \"" + ex.getParameterName() + "\" is missing");
+        problem.setTitle("Missing request parameter");
+        problem.setProperty(
+                "errors", List.of(new FieldViolation(ex.getParameterName(), "required parameter is missing")));
+        return withCorrelationId(problem, request);
+    }
+
+    /** A path variable or query parameter that cannot be converted (e.g. a malformed UUID) is a client error, not a 500. */
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ProblemDetail handleTypeMismatch(
+            MethodArgumentTypeMismatchException ex, HttpServletRequest request) {
+        String name = ex.getName();
+        String expected = ex.getRequiredType() != null ? ex.getRequiredType().getSimpleName() : "expected type";
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.BAD_REQUEST, "Parameter \"" + name + "\" is not a valid " + expected);
+        problem.setTitle("Invalid request parameter");
+        problem.setProperty("errors", List.of(new FieldViolation(name, "not a valid " + expected)));
+        return withCorrelationId(problem, request);
+    }
+
+    /** Bean-validation failures on non-body method parameters (Spring MVC 6.1+ raises these separately). */
+    @ExceptionHandler(HandlerMethodValidationException.class)
+    public ProblemDetail handleMethodValidation(
+            HandlerMethodValidationException ex, HttpServletRequest request) {
+        List<FieldViolation> violations = ex.getParameterValidationResults().stream()
+                .flatMap(result -> result.getResolvableErrors().stream()
+                        .map(error -> new FieldViolation(
+                                result.getMethodParameter().getParameterName() != null
+                                        ? result.getMethodParameter().getParameterName()
+                                        : "parameter",
+                                error.getDefaultMessage() != null ? error.getDefaultMessage() : "invalid value")))
+                .toList();
+        ProblemDetail problem =
+                ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, "Validation failed");
+        problem.setTitle("Validation failed");
+        problem.setProperty("errors", violations);
         return withCorrelationId(problem, request);
     }
 

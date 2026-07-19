@@ -93,7 +93,9 @@ class EvaluationServiceTest {
                 metricResultRepository,
                 runRepository,
                 executionRepository,
-                testCaseRepository);
+                testCaseRepository,
+                new com.rageval.workbench.common.observability.WorkbenchMetrics(
+                        new io.micrometer.core.instrument.simple.SimpleMeterRegistry()));
         run = EvaluationFixtures.run();
         testCase = EvaluationFixtures.answerableTestCase(
                 List.of(EvaluationFixtures.fact("f", "Java 21", FactMatchType.CASE_INSENSITIVE_TEXT, true)),

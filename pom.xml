@@ -65,6 +65,14 @@
 			<artifactId>micrometer-registry-prometheus</artifactId>
 			<scope>runtime</scope>
 		</dependency>
+		<!-- springdoc 3.x is the Spring Boot 4 line (3.0.3 builds against Boot 4.0.5; verified
+		     against this project's Boot 4.1.0 by the full test suite plus a live /v3/api-docs
+		     check — see docs/api.md). The 2.8.x line targets Boot 3 and must not be used here. -->
+		<dependency>
+			<groupId>org.springdoc</groupId>
+			<artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+			<version>3.0.3</version>
+		</dependency>
 		<dependency>
 			<groupId>org.postgresql</groupId>
 			<artifactId>postgresql</artifactId>
@@ -129,6 +137,12 @@
 			<groupId>org.wiremock</groupId>
 			<artifactId>wiremock-standalone</artifactId>
 			<version>3.9.1</version>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>com.tngtech.archunit</groupId>
+			<artifactId>archunit-junit5</artifactId>
+			<version>1.4.2</version>
 			<scope>test</scope>
 		</dependency>
 	</dependencies>
