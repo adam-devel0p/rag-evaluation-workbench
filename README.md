@@ -384,6 +384,8 @@ src/main/java/com/rageval/workbench/
 - [docs/monitoring-guide.md](docs/monitoring-guide.md) — start here if you're new to this
   codebase or to RAG evaluation: full workflow for running a real black-box monitoring
   engagement and what data to look at
+- [docs/first-real-chatbot-walkthrough.md](docs/first-real-chatbot-walkthrough.md) — copy-paste
+  exercise: test a real, free, public chatbot API end to end and get an actual report
 - [docs/white-box-roadmap.md](docs/white-box-roadmap.md) — design exploration (not implemented):
   what this project would need to do comprehensive white-box monitoring, and where that conflicts
   with current MVP scope
