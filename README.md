@@ -381,6 +381,12 @@ src/main/java/com/rageval/workbench/
 
 ## Further documentation
 
+- [docs/monitoring-guide.md](docs/monitoring-guide.md) — start here if you're new to this
+  codebase or to RAG evaluation: full workflow for running a real black-box monitoring
+  engagement and what data to look at
+- [docs/white-box-roadmap.md](docs/white-box-roadmap.md) — design exploration (not implemented):
+  what this project would need to do comprehensive white-box monitoring, and where that conflicts
+  with current MVP scope
 - [docs/spec.md](docs/spec.md) — full functional specification
 - [docs/api.md](docs/api.md) — endpoint overview + complete cURL walkthrough + springdoc notes
 - [docs/implementation-plan.md](docs/implementation-plan.md) — phase checklist + current status
