@@ -389,6 +389,10 @@ src/main/java/com/rageval/workbench/
 - [docs/white-box-roadmap.md](docs/white-box-roadmap.md) — design exploration (not implemented):
   what this project would need to do comprehensive white-box monitoring, and where that conflicts
   with current MVP scope
+- [docs/how-it-works-plain-english.md](docs/how-it-works-plain-english.md) — the same journey as
+  the technical deep dive below, explained with no code and no jargon, for a non-technical reader
+- [docs/technical-flow.md](docs/technical-flow.md) — code-grounded internals deep dive: exact DB
+  tables/writes, request→controller→service call chains, concurrency model, sequence diagrams
 - [docs/spec.md](docs/spec.md) — full functional specification
 - [docs/api.md](docs/api.md) — endpoint overview + complete cURL walkthrough + springdoc notes
 - [docs/implementation-plan.md](docs/implementation-plan.md) — phase checklist + current status
