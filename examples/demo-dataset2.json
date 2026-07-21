@@ -1,0 +1,29 @@
+{
+  "name": "Demo Target Scenario Dataset",
+  "description": "Exercises every deliberate demo-target scenario from spec section 27 (DEMO-001 to DEMO-014). Import via POST /api/v1/datasets/import/json, mark READY, then run against a target pointing at POST /demo-target/chat with the demo profile active. The target's request template must pass {{testCaseId}} so the demo target can select the scenario.",
+  "datasetVersion": "1.0.0",
+  "testCases": [
+    {
+      "externalId": "DEMO-001",
+      "question": "Which Java version does the payments service require?",
+      "referenceAnswer": "The payments service requires Java 21.",
+      "answerable": true,
+      "shouldRefuse": false,
+      "severity": "HIGH",
+      "requiredFacts": [
+        {
+          "id": "fact-java-version",
+          "value": "Java 21",
+          "matchType": "CASE_INSENSITIVE_TEXT",
+          "mandatory": true,
+          "explanation": "The current supported Java version must be stated."
+        }
+      ],
+      "forbiddenClaims": [],
+      "expectedDocumentIds": ["payments-setup-v4"],
+      "tags": ["demo", "correct-answer"],
+      "userContext": {"role": "developer"},
+      "notes": "Scenario: correct answer with correct citation and well-ranked retrieval."
+    }
+  ]
+}
